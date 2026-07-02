@@ -557,8 +557,11 @@ n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
 # KPIs de avance
 total_ninos   = len(ninos)
 if 'perfil' in df.columns:
-    n_embarazadas = int(df['perfil'].isin(PERFILES_EMBARAZADA).sum())
-    n_lactantes   = int(df['perfil'].isin(PERFILES_LACTANTE).sum())
+    # Deduplicar por nombre antes de contar maternas:
+    # si una embarazada/lactante tiene 2 hijos y hay 2 submissions, solo se cuenta una vez.
+    df_madres_unicas = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+    n_embarazadas = int(df_madres_unicas['perfil'].isin(PERFILES_EMBARAZADA).sum())
+    n_lactantes   = int(df_madres_unicas['perfil'].isin(PERFILES_LACTANTE).sum())
 else:
     n_embarazadas = 0
     n_lactantes   = 0
