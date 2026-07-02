@@ -663,28 +663,39 @@ with tab_escenarios:
     )
     st.markdown("---")
 
-    tasa_base = max(int(round(tasa_actual)), 10)
+    # Tasa actual es el TOTAL de todos los equipos ese día
+    tasa_total_actual = max(int(round(tasa_actual)), 6)
+    tasa_por_equipo   = max(tasa_total_actual // N_EQUIPOS_ACTUAL, 3)
+
+    st.markdown(f"> **Ritmo actual:** {tasa_total_actual} tamizajes/día en total · {tasa_por_equipo} por equipo (÷ {N_EQUIPOS_ACTUAL} equipos)")
 
     # ── ESCENARIOS EN EQUIPOS (parejas) ──
     st.markdown("### 👥 Escenarios trabajando en equipos (parejas)")
-    st.caption("Cada equipo = 2 personas (técnica + promotora). Mínimo: 6 equipos actuales.")
+    st.caption("Cada equipo = 2 personas (técnica + promotora). Los sliders son **por equipo**. La capacidad total se calcula automáticamente.")
 
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**🟡 Conservador**")
-        tam_A = st.slider("Tamizajes/día por equipo (A)", 5, 80, tasa_base,  5, key='A1')
-        sem_A = st.slider("Días campo/semana (A)",        1, 6,  3,          1, key='A2')
-        eq_A  = st.slider("N° de equipos (A)",            6, 12, 6,          1, key='A3')
+        tam_A = st.slider("Tamizajes/día por equipo (A)", 3, 60, tasa_por_equipo,         2, key='A1')
+        sem_A = st.slider("Días campo/semana (A)",        1, 6,  3,                       1, key='A2')
+        eq_A  = st.slider("N° de equipos (A)",            6, 12, 6,                       1, key='A3')
+        st.metric("🔢 Capacidad total/día", f"{tam_A * eq_A} tamizajes",
+                  help="tamizajes/día por equipo × número de equipos")
+        st.metric("📅 Capacidad semanal", f"{tam_A * eq_A * sem_A} tamizajes")
     with col2:
         st.markdown("**🟠 Moderado**")
-        tam_B = st.slider("Tamizajes/día por equipo (B)", 5, 80, min(tasa_base+5, 80), 5, key='B1')
-        sem_B = st.slider("Días campo/semana (B)",        1, 6,  4,                    1, key='B2')
-        eq_B  = st.slider("N° de equipos (B)",            6, 12, 8,                    1, key='B3')
+        tam_B = st.slider("Tamizajes/día por equipo (B)", 3, 60, min(tasa_por_equipo+3, 60), 2, key='B1')
+        sem_B = st.slider("Días campo/semana (B)",        1, 6,  4,                          1, key='B2')
+        eq_B  = st.slider("N° de equipos (B)",            6, 12, 8,                          1, key='B3')
+        st.metric("🔢 Capacidad total/día", f"{tam_B * eq_B} tamizajes")
+        st.metric("📅 Capacidad semanal",   f"{tam_B * eq_B * sem_B} tamizajes")
     with col3:
         st.markdown("**🔴 Intensivo**")
-        tam_C = st.slider("Tamizajes/día por equipo (C)", 5, 80, min(tasa_base+10, 80), 5, key='C1')
-        sem_C = st.slider("Días campo/semana (C)",        1, 6,  5,                     1, key='C2')
-        eq_C  = st.slider("N° de equipos (C)",            6, 12, 10,                    1, key='C3')
+        tam_C = st.slider("Tamizajes/día por equipo (C)", 3, 60, min(tasa_por_equipo+6, 60), 2, key='C1')
+        sem_C = st.slider("Días campo/semana (C)",        1, 6,  5,                          1, key='C2')
+        eq_C  = st.slider("N° de equipos (C)",            6, 12, 10,                         1, key='C3')
+        st.metric("🔢 Capacidad total/día", f"{tam_C * eq_C} tamizajes")
+        st.metric("📅 Capacidad semanal",   f"{tam_C * eq_C * sem_C} tamizajes")
 
     escenarios_eq = {
         '🟡 Conservador (equipos)': calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_A, sem_A, eq_A),
@@ -701,13 +712,17 @@ with tab_escenarios:
         f"Team actual: {N_PERSONAS_TOTAL} personas. Tamizajes individuales suelen ser menores (sin pareja de apoyo)."
     )
 
-    col_i1, col_i2 = st.columns(2)
+    col_i1, col_i2, col_i3 = st.columns(3)
     with col_i1:
-        tam_ind  = st.slider("Tamizajes/día por persona", 3, 40, 10, 1, key='I1')
-        sem_ind  = st.slider("Días campo/semana",          1, 6,  4,  1, key='I2')
+        tam_ind = st.slider("Tamizajes/día por persona", 3, 40, tasa_por_equipo, 1, key='I1')
+        sem_ind = st.slider("Días campo/semana",          1, 6,  4,              1, key='I2')
     with col_i2:
-        n_ind    = st.slider("N° de personas en campo",   6, N_PERSONAS_TOTAL, N_PERSONAS_TOTAL, 1, key='I3')
-        st.caption(f"Equipo completo actual: {N_PERSONAS_TOTAL} personas")
+        n_ind   = st.slider("N° de personas en campo", 6, N_PERSONAS_TOTAL, N_PERSONAS_TOTAL, 1, key='I3')
+        st.caption(f"Equipo completo: {N_PERSONAS_TOTAL} personas")
+    with col_i3:
+        st.metric("🔢 Capacidad total/día", f"{tam_ind * n_ind} tamizajes",
+                  help="tamizajes/día por persona × personas en campo")
+        st.metric("📅 Capacidad semanal",   f"{tam_ind * n_ind * sem_ind} tamizajes")
 
     escenario_ind = calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_ind, sem_ind, n_ind)
 
