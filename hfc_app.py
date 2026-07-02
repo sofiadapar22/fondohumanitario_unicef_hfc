@@ -17,9 +17,17 @@ from datetime import date, timedelta
 st.set_page_config(page_title="HFC · UNICEF US / FUSAL", page_icon="🔍", layout="wide")
 
 META_TAMIZAJE  = 4_000
+META_NINOS     = 3_500   # niños menores de 5 años
+META_MATERNAS  = 500     # embarazadas + madres lactantes (combinadas)
 META_REFERIDOS = 120
 META_DESNUT    = 120
 FECHA_LIMITE   = date(2026, 11, 15)
+
+# Perfiles que cuentan como "maternas" tamizadas
+PERFILES_EMBARAZADA = ['Mujer embarazada',
+                       'Madre de niño/a menor a 5 años y mujer embarazada']
+PERFILES_LACTANTE   = ['Madre lactante']
+PERFILES_MATERNAS   = PERFILES_EMBARAZADA + PERFILES_LACTANTE
 
 # Estructura de equipos de campo
 EQUIPOS = [
@@ -536,11 +544,18 @@ n_alta  = int((todos['severidad']=='Alta').sum())  if not todos.empty else 0
 n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
 
 # KPIs de avance
-total_ninos     = len(ninos)
-perfiles_tami   = ['Mujer embarazada','Madre lactante','Madre de niño/a menor a 5 años y mujer embarazada']
-madres_tami     = df[df['perfil'].isin(perfiles_tami)] if 'perfil' in df.columns else pd.DataFrame()
-total_tamizados = total_ninos + len(madres_tami)
+total_ninos   = len(ninos)
+if 'perfil' in df.columns:
+    n_embarazadas = int(df['perfil'].isin(PERFILES_EMBARAZADA).sum())
+    n_lactantes   = int(df['perfil'].isin(PERFILES_LACTANTE).sum())
+else:
+    n_embarazadas = 0
+    n_lactantes   = 0
+total_maternas  = n_embarazadas + n_lactantes
+total_tamizados = total_ninos + total_maternas
 pct_meta        = total_tamizados / META_TAMIZAJE * 100
+pct_ninos       = total_ninos    / META_NINOS    * 100
+pct_maternas    = total_maternas / META_MATERNAS * 100
 dias_restantes  = (FECHA_LIMITE - date.today()).days
 dias_campo      = df['fecha_dia'].nunique()
 tasa_actual     = total_tamizados / dias_campo if dias_campo > 0 else 0
@@ -565,15 +580,75 @@ tab_avance, tab_escenarios, tab_flags, tab_dur, tab_dups, tab_out, tab_enc, tab_
 # ── TAB 1: AVANCE GENERAL ──────────────────────
 with tab_avance:
     st.subheader("📊 Avance General del Proyecto")
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Personas tamizadas (C1)", f"{total_tamizados:,}")
-    c2.metric("Meta", f"{META_TAMIZAJE:,}")
-    c3.metric("Avance", f"{pct_meta:.1f}%")
-    c4.metric("Días restantes", dias_restantes)
-    c5.metric("Ritmo actual", f"{tasa_actual:.1f}/día campo")
 
-    st.progress(min(pct_meta/100, 1.0))
+    # ── Fila 1: Total general ──
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🧑‍🤝‍🧑 Total tamizados (C1)", f"{total_tamizados:,}", help="Niños + embarazadas + lactantes")
+    c2.metric("Meta total", f"{META_TAMIZAJE:,}")
+    c3.metric("% avance total", f"{pct_meta:.1f}%")
+    c4.metric("Días restantes", dias_restantes, help=f"Al {FECHA_LIMITE.strftime('%d/%m/%Y')}")
+    st.progress(min(pct_meta / 100, 1.0))
     st.caption(f"**{total_tamizados:,}** de **{META_TAMIZAJE:,}** — faltan **{META_TAMIZAJE - total_tamizados:,}**")
+
+    st.markdown("---")
+
+    # ── Fila 2: Desglose por tipo ──
+    st.markdown("**Desglose por tipo de persona tamizada**")
+    col_n, col_e, col_l, col_m = st.columns(4)
+
+    with col_n:
+        st.markdown(
+            f"<div style='background:#1e3a5f;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#90caf9;font-weight:600'>👶 Niños &lt;5 años</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{total_ninos:,}</div>"
+            f"<div style='font-size:12px;color:#90caf9'>Meta: {META_NINOS:,}</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_ninos>=50 else 'f59e0b'}'>{pct_ninos:.1f}%</div>"
+            f"<div style='background:#0d2137;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#3b82f6;width:{min(pct_ninos,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(META_NINOS-total_ninos,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_e:
+        pct_emb = n_embarazadas / (META_MATERNAS/2) * 100  # ~250 embarazadas
+        st.markdown(
+            f"<div style='background:#3b1f5e;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#c4b5fd;font-weight:600'>🤰 Embarazadas</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{n_embarazadas:,}</div>"
+            f"<div style='font-size:12px;color:#c4b5fd'>Meta estimada: ~250</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_emb>=50 else 'f59e0b'}'>{pct_emb:.1f}%</div>"
+            f"<div style='background:#1e0f3a;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#8b5cf6;width:{min(pct_emb,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(250-n_embarazadas,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_l:
+        pct_lac = n_lactantes / (META_MATERNAS/2) * 100  # ~250 lactantes
+        st.markdown(
+            f"<div style='background:#1f3b2e;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#6ee7b7;font-weight:600'>🤱 Madres lactantes</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{n_lactantes:,}</div>"
+            f"<div style='font-size:12px;color:#6ee7b7'>Meta estimada: ~250</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_lac>=50 else 'f59e0b'}'>{pct_lac:.1f}%</div>"
+            f"<div style='background:#0d2018;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#10b981;width:{min(pct_lac,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(250-n_lactantes,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_m:
+        st.markdown(
+            f"<div style='background:#3b2a10;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#fcd34d;font-weight:600'>🌸 Maternas (total)</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{total_maternas:,}</div>"
+            f"<div style='font-size:12px;color:#fcd34d'>Meta: {META_MATERNAS:,}</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_maternas>=50 else 'f59e0b'}'>{pct_maternas:.1f}%</div>"
+            f"<div style='background:#1f1505;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#f59e0b;width:{min(pct_maternas,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(META_MATERNAS-total_maternas,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.metric("⚡ Ritmo actual", f"{tasa_actual:.1f} tamizajes/día de campo",
+              help=f"Promedio sobre {dias_campo} días de campo realizados")
     st.markdown("---")
 
     col_izq, col_der = st.columns(2)
@@ -625,9 +700,15 @@ with tab_avance:
         st.markdown("**Indicadores del proyecto**")
         n_ref = int(df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if 'referencia' in df.columns else 0
         ind_df = pd.DataFrame({
-            'Indicador': ['Personas tamizadas (C1)', 'Personas referidas'],
-            'Meta':      [4000, 120],
-            'Actual':    [total_tamizados, n_ref],
+            'Indicador': [
+                'Total tamizados (C1)',
+                '— Niños <5 años',
+                '— Embarazadas',
+                '— Madres lactantes',
+                'Personas referidas',
+            ],
+            'Meta':   [4000, 3500, 250, 250, 120],
+            'Actual': [total_tamizados, total_ninos, n_embarazadas, n_lactantes, n_ref],
         })
         ind_df['Avance %'] = (ind_df['Actual'] / ind_df['Meta'] * 100).round(1)
         st.dataframe(ind_df, use_container_width=True, hide_index=True)
