@@ -110,7 +110,9 @@ def cargar_correcciones():
 # CARGA Y LIMPIEZA
 # ─────────────────────────────────────────────
 @st.cache_data
-def cargar_raw(archivo):
+def cargar_raw(archivo, mod_time=None):
+    # mod_time se usa como clave de caché: cuando el archivo cambia en el repo,
+    # su fecha de modificación cambia y Streamlit recarga los datos automáticamente.
     xl = pd.ExcelFile(archivo)
     main  = pd.read_excel(xl, sheet_name=0)
     ninos = pd.read_excel(xl, sheet_name='group_sr9jz33')       if 'group_sr9jz33'       in xl.sheet_names else pd.DataFrame()
@@ -437,10 +439,12 @@ with st.sidebar:
     if archivo_repo:
         st.success("📊 Datos publicados cargados")
         import datetime
-        fecha_mod = datetime.datetime.fromtimestamp(
-            pathlib.Path(archivo_repo).stat().st_mtime
-        ).strftime('%d/%m/%Y %H:%M')
+        mtime_repo = pathlib.Path(archivo_repo).stat().st_mtime
+        fecha_mod  = datetime.datetime.fromtimestamp(mtime_repo).strftime('%d/%m/%Y %H:%M')
         st.caption(f"Última actualización: {fecha_mod}")
+        if st.button("🔄 Recargar datos del repo"):
+            st.cache_data.clear()
+            st.rerun()
         archivo = archivo_repo   # se pasa como ruta string, se maneja abajo
 
     else:
@@ -464,7 +468,14 @@ with st.sidebar:
             st.error("Clave incorrecta")
 
     if archivo:
-        df_raw, df_ninos_raw, df_sec3_raw = cargar_raw(archivo)
+        # Pasar la fecha de modificación como clave de caché.
+        # Cuando subes un archivo nuevo al repo, su mtime cambia → caché se invalida → datos frescos.
+        if isinstance(archivo, str):
+            mod_time = pathlib.Path(archivo).stat().st_mtime
+        else:
+            mod_time = None   # archivo subido en sesión: Streamlit lo hashea por contenido
+
+        df_raw, df_ninos_raw, df_sec3_raw = cargar_raw(archivo, mod_time)
         df = unificar(df_raw.copy(), dist_map, cant_map, us_map)
         df, n_corr = aplicar_correcciones(df, correcciones)
         ninos = construir_ninos(df_ninos_raw, df_sec3_raw, df)
