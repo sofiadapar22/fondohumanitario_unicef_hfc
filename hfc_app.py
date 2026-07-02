@@ -21,6 +21,16 @@ META_REFERIDOS = 120
 META_DESNUT    = 120
 FECHA_LIMITE   = date(2026, 11, 15)
 
+# Meta por zona (columna "Propuesta" del plan operativo)
+METAS_ZONA = {
+    "San Miguel Centro":   400,
+    "Ahuachapán Centro":   800,
+    "Santa Ana Centro":    400,
+    "San Salvador Este":   800,
+    "San Salvador Centro": 800,
+    "Usulután Este":       800,
+}
+
 st.markdown("""
 <style>
 .flag-high   {background:#fee2e2;border-left:4px solid #ef4444;padding:6px 10px;border-radius:4px;margin:2px 0;font-size:13px;}
@@ -465,15 +475,25 @@ with tab_avance:
             st.info("Sin datos.")
 
     st.markdown("---")
+    # ── Avance por zona vs meta propuesta ──
+    st.markdown("**Avance por zona vs. meta propuesta**")
+    if not ninos.empty and 'Municipio' in ninos.columns:
+        mun_n = ninos.groupby('Municipio').size().reset_index(name='Tamizados')
+        mun_n['Meta zona'] = mun_n['Municipio'].map(METAS_ZONA).fillna(0).astype(int)
+        mun_n['Pendientes'] = (mun_n['Meta zona'] - mun_n['Tamizados']).clip(lower=0)
+        mun_n['% avance']   = (mun_n['Tamizados'] / mun_n['Meta zona'].replace(0, pd.NA) * 100).round(1)
+        mun_n = mun_n.sort_values('Tamizados', ascending=False)
+        st.dataframe(mun_n[['Municipio','Meta zona','Tamizados','Pendientes','% avance']],
+                     use_container_width=True, hide_index=True)
+
+        # Barras comparativas
+        bar_data = mun_n.set_index('Municipio')[['Tamizados','Meta zona']]
+        st.bar_chart(bar_data)
+
+    st.markdown("---")
+
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("**Avance por municipio**")
-        if not ninos.empty and 'Municipio' in ninos.columns:
-            mun_n = ninos.groupby('Municipio').size().reset_index(name='Niños tamizados')
-            mun_n['% de meta'] = (mun_n['Niños tamizados'] / META_TAMIZAJE * 100).round(1)
-            st.dataframe(mun_n.sort_values('Niños tamizados', ascending=False),
-                         use_container_width=True, hide_index=True)
-    with col_b:
         st.markdown("**Indicadores del proyecto**")
         n_ref = int(df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if 'referencia' in df.columns else 0
         ind_df = pd.DataFrame({
@@ -484,12 +504,33 @@ with tab_avance:
         ind_df['Avance %'] = (ind_df['Actual'] / ind_df['Meta'] * 100).round(1)
         st.dataframe(ind_df, use_container_width=True, hide_index=True)
 
+    with col_b:
+        st.markdown("**Zonas sin meta asignada en el plan**")
+        if not ninos.empty and 'Municipio' in ninos.columns:
+            zonas_conocidas = set(METAS_ZONA.keys())
+            zonas_data = set(ninos['Municipio'].dropna().unique())
+            sin_meta = zonas_data - zonas_conocidas
+            if sin_meta:
+                st.warning(f"Zonas en datos sin meta definida: {', '.join(sorted(sin_meta))}")
+            else:
+                st.success("✅ Todas las zonas tienen meta asignada.")
+
     st.markdown("---")
-    st.markdown("**Progreso acumulado de niños tamizados**")
+
+    # ── Gráfica avance diario ──
+    st.markdown("**📅 Avance diario de niños tamizados**")
+    if not ninos.empty and 'fecha_dia' in ninos.columns:
+        diario = ninos.groupby('fecha_dia').size().reset_index(name='Niños por día').sort_values('fecha_dia')
+        diario['fecha_dia'] = diario['fecha_dia'].astype(str)
+        st.bar_chart(diario.set_index('fecha_dia')['Niños por día'])
+
+    st.markdown("**📈 Progreso acumulado de niños tamizados**")
     if not ninos.empty and 'fecha_dia' in ninos.columns:
         cum = ninos.groupby('fecha_dia').size().reset_index(name='n').sort_values('fecha_dia')
-        cum['acumulado'] = cum['n'].cumsum()
-        st.line_chart(cum.set_index('fecha_dia')['acumulado'])
+        cum['Acumulado'] = cum['n'].cumsum()
+        cum['Meta total'] = META_TAMIZAJE
+        cum['fecha_dia'] = cum['fecha_dia'].astype(str)
+        st.line_chart(cum.set_index('fecha_dia')[['Acumulado','Meta total']])
 
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
@@ -696,45 +737,143 @@ with tab_geo_tab:
 
 # ── TAB 9: EXPORTAR ────────────────────────────
 with tab_export:
-    st.subheader("📥 Exportar")
-    col1, col2 = st.columns(2)
+    st.subheader("📥 Exportar bases de datos")
 
+    # ── 1. MADRES / PERSONAS ENTREVISTADAS ──
+    st.markdown("### 👩 Madres / Personas entrevistadas")
+    st.caption("Una fila por entrevista. Incluye datos de la madre/cuidadora, perfil, medidas (si aplica) y geografía corregida.")
+    cols_madres = [c for c in [
+        '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+        'nombre', 'sexo', 'perfil', 'telefono', 'sabe_leer',
+        'peso', 'talla', 'imc', 'eg_sem',
+        'referencia', 'consejeria', 'duracion_min'
+    ] if c in df.columns]
+    buf_madres = io.BytesIO()
+    df[cols_madres].to_excel(buf_madres, index=False); buf_madres.seek(0)
+    col1, col2 = st.columns([2,1])
     with col1:
-        st.markdown("**Entrevistas limpias (con correcciones geo)**")
-        cols_exp = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','distrito_nombre',
-                                 'canton_nombre','unidad_nombre','perfil','sexo','telefono',
-                                 'duracion_min','referencia'] if c in df.columns]
-        buf1 = io.BytesIO()
-        df[cols_exp].to_excel(buf1, index=False); buf1.seek(0)
-        st.download_button("⬇️ Entrevistas limpias (.xlsx)", buf1, "entrevistas_limpio.xlsx",
+        st.download_button("⬇️ Madres / Entrevistadas (.xlsx)", buf_madres, "madres_entrevistadas.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with col2:
         st.metric("Registros", len(df))
 
-    with col2:
-        st.markdown("**Base de niños tamizados**")
-        if not ninos.empty:
-            cols_n = [c for c in ['_submission_id','¿Cuál es el nombre del niño/a?','Sexo',
-                                   'Fecha de nacimiento del niño a evaluar','edad_txt',
-                                   'fecha_dia','encuestador','Municipio','distrito_nombre','canton_nombre',
-                                   'peso_nino','talla_nino','muac',
-                                   '¿Cuál es el diagnóstico nutricional de la talla y edad?',
-                                   '¿Cuál es el diagnóstico nutricional de peso edad?',
-                                   'Diagnóstico nutricional según perímetro braquial',
-                                   '¿Se brindó referencia?'] if c in ninos.columns]
-            buf2 = io.BytesIO()
-            ninos[cols_n].to_excel(buf2, index=False); buf2.seek(0)
-            st.download_button("⬇️ Niños tamizados (.xlsx)", buf2, "ninos_tamizados.xlsx",
+    st.markdown("---")
+
+    # ── 2. NIÑOS TAMIZADOS ──
+    st.markdown("### 👶 Niños tamizados")
+    st.caption("Una fila por niño. Incluye medidas antropométricas, diagnóstico nutricional y datos del hogar.")
+    if not ninos.empty:
+        cols_ninos = [c for c in [
+            '_submission_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre',
+            '¿Cuál es el nombre del niño/a?', 'Sexo',
+            'Fecha de nacimiento del niño a evaluar', 'edad_txt',
+            'peso_nino', 'talla_nino', 'muac',
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?',
+            '¿Cuál es el diagnóstico nutricional de peso edad?',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+            'Diagnóstico nutricional según perímetro braquial',
+            '¿Se brindó referencia?'
+        ] if c in ninos.columns]
+        buf_ninos = io.BytesIO()
+        ninos[cols_ninos].to_excel(buf_ninos, index=False); buf_ninos.seek(0)
+        col1, col2 = st.columns([2,1])
+        with col1:
+            st.download_button("⬇️ Niños tamizados (.xlsx)", buf_ninos, "ninos_tamizados.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with col2:
             st.metric("Niños", len(ninos))
+    else:
+        st.info("No se encontraron datos de niños en este archivo.")
 
     st.markdown("---")
-    st.markdown("**Reporte de flags**")
+
+    # ── 3. BASE CONSOLIDADA (madres + niños en un solo archivo) ──
+    st.markdown("### 📋 Base consolidada (madres + niños)")
+    st.caption("Una fila por niño con los datos de su madre/cuidadora. Las madres sin niños registrados aparecen al final con campos de niño vacíos.")
+
+    if not ninos.empty:
+        # Columnas de la madre que se unen
+        cols_madre_join = [c for c in [
+            '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+            'nombre', 'perfil', 'telefono', 'peso', 'talla', 'imc', 'eg_sem',
+            'referencia', 'consejeria', 'duracion_min'
+        ] if c in df.columns]
+
+        cols_nino_join = [c for c in [
+            '_submission_id',
+            '¿Cuál es el nombre del niño/a?', 'Sexo',
+            'Fecha de nacimiento del niño a evaluar', 'edad_txt',
+            'peso_nino', 'talla_nino', 'muac',
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?',
+            '¿Cuál es el diagnóstico nutricional de peso edad?',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+            'Diagnóstico nutricional según perímetro braquial',
+            '¿Se brindó referencia?'
+        ] if c in ninos.columns]
+
+        # Merge niños con madre
+        consolidado = ninos[cols_nino_join].merge(
+            df[cols_madre_join].rename(columns={'nombre': 'nombre_madre'}),
+            left_on='_submission_id', right_on='_id', how='left'
+        )
+
+        # Madres sin niños (left join inverso)
+        ids_con_ninos = set(ninos['_submission_id'].dropna().unique())
+        madres_sin_ninos = df[~df['_id'].isin(ids_con_ninos)][cols_madre_join].rename(columns={'nombre': 'nombre_madre'})
+        madres_sin_ninos['_submission_id'] = madres_sin_ninos['_id']
+
+        consolidado = pd.concat([consolidado, madres_sin_ninos], ignore_index=True)
+
+        # Renombrar columnas para claridad
+        consolidado = consolidado.rename(columns={
+            'nombre_madre':                                   'Nombre madre/cuidadora',
+            '¿Cuál es el nombre del niño/a?':                'Nombre niño/a',
+            'edad_txt':                                       'Edad niño/a',
+            'Fecha de nacimiento del niño a evaluar':        'Fecha nacimiento niño/a',
+            'peso_nino':                                      'Peso niño (kg)',
+            'talla_nino':                                     'Talla niño (cm)',
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?': 'Diagnóstico talla/edad',
+            '¿Cuál es el diagnóstico nutricional de peso edad?':       'Diagnóstico peso/edad',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?':'Diagnóstico peso/talla',
+            'Diagnóstico nutricional según perímetro braquial':        'Diagnóstico MUAC',
+            '¿Se brindó referencia?':                                  'Referencia niño/a',
+        })
+
+        # Orden de columnas
+        orden = [c for c in [
+            '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+            'Nombre madre/cuidadora', 'perfil', 'telefono',
+            'Nombre niño/a', 'Edad niño/a', 'Fecha nacimiento niño/a',
+            'Peso niño (kg)', 'Talla niño (cm)', 'muac',
+            'Diagnóstico talla/edad', 'Diagnóstico peso/edad', 'Diagnóstico peso/talla', 'Diagnóstico MUAC',
+            'Referencia niño/a', 'referencia', 'consejeria', 'duracion_min'
+        ] if c in consolidado.columns]
+
+        buf_cons = io.BytesIO()
+        consolidado[orden].to_excel(buf_cons, index=False); buf_cons.seek(0)
+        col1, col2, col3 = st.columns([2,1,1])
+        with col1:
+            st.download_button("⬇️ Base consolidada (.xlsx)", buf_cons, "base_consolidada.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with col2:
+            st.metric("Filas (niños + madres sin niños)", len(consolidado))
+        with col3:
+            st.metric("IDs únicos", consolidado['_id'].nunique() if '_id' in consolidado.columns else 0)
+    else:
+        st.info("Se necesitan datos de niños para generar la base consolidada.")
+
+    st.markdown("---")
+
+    # ── 4. REPORTE DE FLAGS ──
+    st.markdown("### 🚦 Reporte de flags HFC")
     if not todos.empty:
         cols_f = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag','severidad'] if c in todos.columns]
-        buf3 = io.BytesIO()
-        with pd.ExcelWriter(buf3, engine='openpyxl') as w:
+        buf_flags = io.BytesIO()
+        with pd.ExcelWriter(buf_flags, engine='openpyxl') as w:
             todos[cols_f].to_excel(w, sheet_name='Flags', index=False)
             stats_enc(df).to_excel(w, sheet_name='Por encuestadora', index=False)
-        buf3.seek(0)
-        st.download_button("⬇️ Reporte de flags (.xlsx)", buf3, "hfc_flags.xlsx",
+        buf_flags.seek(0)
+        st.download_button("⬇️ Reporte de flags (.xlsx)", buf_flags, "hfc_flags.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.success("✅ Sin flags — no hay reporte que exportar.")
