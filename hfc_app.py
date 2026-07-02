@@ -624,10 +624,22 @@ with tab_avance:
     st.markdown("**📈 Progreso acumulado de niños tamizados**")
     if not ninos.empty and 'fecha_dia' in ninos.columns:
         cum = ninos.groupby('fecha_dia').size().reset_index(name='n').sort_values('fecha_dia')
-        cum['Acumulado'] = cum['n'].cumsum()
-        cum['Meta total'] = META_TAMIZAJE
+        cum['Niños acumulados'] = cum['n'].cumsum()
         cum['fecha_dia'] = cum['fecha_dia'].astype(str)
-        st.line_chart(cum.set_index('fecha_dia')[['Acumulado','Meta total']])
+
+        ultimo = int(cum['Niños acumulados'].iloc[-1])
+        pct_cum = round(ultimo / META_TAMIZAJE * 100, 1)
+
+        # Barra de progreso con contexto claro
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("Niños acumulados", f"{ultimo:,}")
+        col_p2.metric("Meta", f"{META_TAMIZAJE:,}")
+        col_p3.metric("% completado", f"{pct_cum}%")
+        st.progress(min(pct_cum / 100, 1.0))
+
+        # Línea de acumulado (sin meta — la escala sería engañosa)
+        st.line_chart(cum.set_index('fecha_dia')['Niños acumulados'])
+        st.caption(f"Faltan **{META_TAMIZAJE - ultimo:,}** niños para alcanzar la meta de {META_TAMIZAJE:,}.")
 
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
@@ -640,49 +652,84 @@ with tab_escenarios:
 
     > Las 4,000 personas deben completar los **3 contactos** antes del **15 noviembre 2026**
     """)
-    st.info(f"C1 actual: **{total_tamizados:,}** tamizados · **{META_TAMIZAJE - total_tamizados:,}** pendientes · **{pct_meta:.1f}%** completado")
+
+    # Equipo actual
+    N_EQUIPOS_ACTUAL  = 6   # parejas actuales
+    N_PERSONAS_TOTAL  = 13  # personas individuales (sin la promotora pendiente)
+
+    st.info(
+        f"C1 actual: **{total_tamizados:,}** tamizados · **{META_TAMIZAJE - total_tamizados:,}** pendientes · **{pct_meta:.1f}%** completado  \n"
+        f"Equipo: **{N_EQUIPOS_ACTUAL} parejas** ({N_PERSONAS_TOTAL} personas) · Ritmo actual: **{tasa_actual:.0f} tamizajes/día de campo**"
+    )
     st.markdown("---")
 
     tasa_base = max(int(round(tasa_actual)), 10)
 
+    # ── ESCENARIOS EN EQUIPOS (parejas) ──
+    st.markdown("### 👥 Escenarios trabajando en equipos (parejas)")
+    st.caption("Cada equipo = 2 personas (técnica + promotora). Mínimo: 6 equipos actuales.")
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**🟡 Conservador**")
-        tam_A = st.slider("Tamizajes/día (A)", 10, 100, tasa_base,         5, key='A1')
-        sem_A = st.slider("Días campo/sem (A)", 1, 6,  3,                  1, key='A2')
-        eq_A  = st.slider("Equipos (A)",        1, 5,  1,                  1, key='A3')
+        tam_A = st.slider("Tamizajes/día por equipo (A)", 5, 80, tasa_base,  5, key='A1')
+        sem_A = st.slider("Días campo/semana (A)",        1, 6,  3,          1, key='A2')
+        eq_A  = st.slider("N° de equipos (A)",            6, 12, 6,          1, key='A3')
     with col2:
         st.markdown("**🟠 Moderado**")
-        tam_B = st.slider("Tamizajes/día (B)", 10, 100, min(tasa_base+10, 100), 5, key='B1')
-        sem_B = st.slider("Días campo/sem (B)", 1, 6,  4,                       1, key='B2')
-        eq_B  = st.slider("Equipos (B)",        1, 5,  2,                       1, key='B3')
+        tam_B = st.slider("Tamizajes/día por equipo (B)", 5, 80, min(tasa_base+5, 80), 5, key='B1')
+        sem_B = st.slider("Días campo/semana (B)",        1, 6,  4,                    1, key='B2')
+        eq_B  = st.slider("N° de equipos (B)",            6, 12, 8,                    1, key='B3')
     with col3:
         st.markdown("**🔴 Intensivo**")
-        tam_C = st.slider("Tamizajes/día (C)", 10, 100, min(tasa_base+20, 100), 5, key='C1')
-        sem_C = st.slider("Días campo/sem (C)", 1, 6,  5,                       1, key='C2')
-        eq_C  = st.slider("Equipos (C)",        1, 5,  3,                       1, key='C3')
+        tam_C = st.slider("Tamizajes/día por equipo (C)", 5, 80, min(tasa_base+10, 80), 5, key='C1')
+        sem_C = st.slider("Días campo/semana (C)",        1, 6,  5,                     1, key='C2')
+        eq_C  = st.slider("N° de equipos (C)",            6, 12, 10,                    1, key='C3')
 
-    st.markdown("---")
-    escenarios = {
-        '🟡 Conservador': calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_A, sem_A, eq_A),
-        '🟠 Moderado':    calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_B, sem_B, eq_B),
-        '🔴 Intensivo':   calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_C, sem_C, eq_C),
+    escenarios_eq = {
+        '🟡 Conservador (equipos)': calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_A, sem_A, eq_A),
+        '🟠 Moderado (equipos)':    calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_B, sem_B, eq_B),
+        '🔴 Intensivo (equipos)':   calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_C, sem_C, eq_C),
     }
 
+    st.markdown("---")
+
+    # ── ESCENARIOS INDIVIDUALES ──
+    st.markdown("### 🧍 Escenarios trabajando de forma individual")
+    st.caption(
+        f"Cada persona trabaja de forma independiente. "
+        f"Team actual: {N_PERSONAS_TOTAL} personas. Tamizajes individuales suelen ser menores (sin pareja de apoyo)."
+    )
+
+    col_i1, col_i2 = st.columns(2)
+    with col_i1:
+        tam_ind  = st.slider("Tamizajes/día por persona", 3, 40, 10, 1, key='I1')
+        sem_ind  = st.slider("Días campo/semana",          1, 6,  4,  1, key='I2')
+    with col_i2:
+        n_ind    = st.slider("N° de personas en campo",   6, N_PERSONAS_TOTAL, N_PERSONAS_TOTAL, 1, key='I3')
+        st.caption(f"Equipo completo actual: {N_PERSONAS_TOTAL} personas")
+
+    escenario_ind = calcular_proyeccion(total_tamizados, META_TAMIZAJE, tam_ind, sem_ind, n_ind)
+
+    # ── TABLA COMPARATIVA ──
+    st.markdown("---")
+    st.markdown("### 📊 Comparativa de todos los escenarios")
+
+    todos_esc = {**escenarios_eq, f'🧍 Individual ({n_ind} personas)': escenario_ind}
     filas = []
-    for nombre, e in escenarios.items():
+    for nombre, e in todos_esc.items():
         filas.append({
-            'Escenario':           nombre,
-            'Cap. diaria total':   e['cap_dia'],
-            'Cap. semanal':        e['cap_sem'],
-            'Fin C1':              e['fecha_fin_c1'].strftime('%d/%m/%Y') if e['fecha_fin_c1'] else '⚠️',
-            'Fin C3':              e['fecha_fin_c3'].strftime('%d/%m/%Y') if e['fecha_fin_c3'] else '⚠️',
-            '✅ Cumple Nov 15':    '✅ Sí' if e['cumple'] else '❌ No',
+            'Escenario':         nombre,
+            'Cap. diaria total': e['cap_dia'],
+            'Cap. semanal':      e['cap_sem'],
+            'Fin C1':            e['fecha_fin_c1'].strftime('%d/%m/%Y') if e['fecha_fin_c1'] else '⚠️',
+            'Fin C3':            e['fecha_fin_c3'].strftime('%d/%m/%Y') if e['fecha_fin_c3'] else '⚠️',
+            '✅ Cumple Nov 15':  '✅ Sí' if e['cumple'] else '❌ No',
         })
     st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
     st.markdown("---")
 
-    for nombre, e in escenarios.items():
+    for nombre, e in todos_esc.items():
         color = "#d1fae5" if e['cumple'] else "#fee2e2"
         icono = "✅" if e['cumple'] else "❌"
         st.markdown(f"""
@@ -1020,3 +1067,4 @@ with tab_export:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.success("✅ Sin flags — no hay reporte que exportar.")
+
