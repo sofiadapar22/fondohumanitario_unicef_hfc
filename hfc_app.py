@@ -21,6 +21,25 @@ META_REFERIDOS = 120
 META_DESNUT    = 120
 FECHA_LIMITE   = date(2026, 11, 15)
 
+# Estructura de equipos de campo
+EQUIPOS = [
+    # (Región, Equipo, Zona, Nombre, Rol)
+    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Helen Romero",      "Técnica Nutrición"),
+    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Fátima Gómez",      "Promotora"),
+    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Fátima Granados",   "Técnica Nutrición"),
+    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Dolores",           "Promotora"),
+    ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Maryori Hernández", "Técnica Nutrición"),
+    ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Yulissa Hernández", "Promotora"),
+    ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Damaris González",  "Técnica Nutrición"),
+    ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Norma Rivera",      "Promotora"),
+    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Geraldina Arriola", "Promotora"),
+    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Marcelino",   "Técnica Nutrición"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Gaby Pino",          "Técnica Nutrición"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Brenda Nerios",      "Técnica Nutrición"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Henríquez", "Promotora"),
+]
+DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
+
 # Meta por zona (columna "Propuesta" del plan operativo)
 METAS_ZONA = {
     "San Miguel Centro":   400,
@@ -204,12 +223,81 @@ def construir_ninos(df_ninos, df_sec3, df_main):
 # ─────────────────────────────────────────────
 # CHECKS HFC
 # ─────────────────────────────────────────────
-def check_duplicados(df):
+def check_duplicados(df, ninos=None):
+    """
+    Detecta duplicados y los clasifica:
+    - 🔴 Duplicado probable: misma madre, misma fecha, sin hijos distintos detectados
+    - 🟡 Posible distinto hijo: misma madre, misma fecha, pero los IDs tienen hijos distintos en el repeat group
+    """
     mask = df.duplicated(subset=['nombre', 'fecha_ent'], keep=False) & df['nombre'].notna()
-    out = df[mask][['_id','nombre','fecha_dia','encuestador','Municipio']].copy()
-    out['flag'] = '🔴 Posible duplicado (misma mamá + misma fecha — verificar si son hijos distintos)'
-    out['severidad'] = 'Alta'
-    return out
+    cands = df[mask][['_id','nombre','fecha_ent','fecha_dia','encuestador','Municipio','peso','talla','imc']].copy()
+
+    if cands.empty:
+        return pd.DataFrame()
+
+    # Construir mapa: submission_id → set de nombres de hijos
+    hijos_por_id = {}
+    if ninos is not None and not ninos.empty and '_submission_id' in ninos.columns:
+        col_nombre_nino = '¿Cuál es el nombre del niño/a?'
+        if col_nombre_nino in ninos.columns:
+            for sid, grp in ninos.groupby('_submission_id'):
+                nombres = set(grp[col_nombre_nino].dropna().astype(str).str.strip().str.title())
+                hijos_por_id[sid] = nombres
+
+    # Para cada grupo (nombre + fecha), determinar si hay hijos distintos entre las filas
+    resultados = []
+    grupos = cands.groupby(['nombre', 'fecha_ent'])
+    for (nombre, fecha), grp in grupos:
+        ids_grupo = grp['_id'].tolist()
+        hijos_grupo = [hijos_por_id.get(i, set()) for i in ids_grupo]
+
+        # Hijos de cada submission
+        todos_hijos = [h for h in hijos_grupo if h]  # excluir sets vacíos
+
+        if len(todos_hijos) >= 2:
+            # Verificar si hay hijos distintos entre los IDs
+            union_hijos = set().union(*todos_hijos)
+            intersecc   = todos_hijos[0].intersection(*todos_hijos[1:]) if len(todos_hijos) > 1 else todos_hijos[0]
+            hijos_distintos = union_hijos - intersecc
+
+            if hijos_distintos:
+                # Tienen hijos distintos → no eliminar
+                tipo = '🟡 Distinto hijo (no eliminar)'
+                sev  = 'Media'
+                detalle = f"Hijos: {', '.join(sorted(union_hijos))}"
+            else:
+                # Mismos hijos o sin hijos → duplicado probable
+                tipo = '🔴 Duplicado probable'
+                sev  = 'Alta'
+                detalle = f"Hijos: {', '.join(sorted(union_hijos)) or 'ninguno registrado'}"
+        else:
+            # Sin hijos en ninguno → duplicado probable
+            tipo = '🔴 Duplicado probable (sin niños en repeat group)'
+            sev  = 'Alta'
+            detalle = 'Sin niños registrados'
+
+        # ¿Misma encuestadora?
+        encuestadoras = grp['encuestador'].dropna().unique()
+        if len(encuestadoras) > 1:
+            detalle += f" · Encuestadoras distintas: {', '.join(encuestadoras)}"
+
+        # ¿Variables clave idénticas? (peso + talla)
+        if 'peso' in grp.columns and grp['peso'].notna().all() and grp['peso'].nunique() == 1:
+            detalle += ' · Peso idéntico ⚠️'
+
+        for _, row in grp.iterrows():
+            resultados.append({
+                '_id':         row['_id'],
+                'nombre':      row['nombre'],
+                'fecha_dia':   row['fecha_dia'],
+                'encuestador': row['encuestador'],
+                'Municipio':   row['Municipio'],
+                'flag':        tipo,
+                'detalle':     detalle,
+                'severidad':   sev,
+            })
+
+    return pd.DataFrame(resultados) if resultados else pd.DataFrame()
 
 def check_duracion(df):
     rows = []
@@ -406,7 +494,7 @@ df      = df_f
 ninos   = ninos_f
 
 # Checks
-f_dup  = check_duplicados(df)
+f_dup  = check_duplicados(df, ninos)
 f_dur  = check_duracion(df)
 f_out  = check_outliers(df)
 f_nul  = check_nulos(df)
@@ -477,18 +565,27 @@ with tab_avance:
     st.markdown("---")
     # ── Avance por zona vs meta propuesta ──
     st.markdown("**Avance por zona vs. meta propuesta**")
+    # Siempre mostrar las 6 zonas del plan, aunque tengan 0 tamizados
+    mun_base = pd.DataFrame({
+        'Municipio': list(METAS_ZONA.keys()),
+        'Meta zona': list(METAS_ZONA.values()),
+    })
     if not ninos.empty and 'Municipio' in ninos.columns:
-        mun_n = ninos.groupby('Municipio').size().reset_index(name='Tamizados')
-        mun_n['Meta zona'] = mun_n['Municipio'].map(METAS_ZONA).fillna(0).astype(int)
-        mun_n['Pendientes'] = (mun_n['Meta zona'] - mun_n['Tamizados']).clip(lower=0)
-        mun_n['% avance']   = (mun_n['Tamizados'] / mun_n['Meta zona'].replace(0, pd.NA) * 100).round(1)
-        mun_n = mun_n.sort_values('Tamizados', ascending=False)
-        st.dataframe(mun_n[['Municipio','Meta zona','Tamizados','Pendientes','% avance']],
-                     use_container_width=True, hide_index=True)
+        mun_actual = ninos.groupby('Municipio').size().reset_index(name='Tamizados')
+    else:
+        mun_actual = pd.DataFrame(columns=['Municipio','Tamizados'])
 
-        # Barras comparativas
-        bar_data = mun_n.set_index('Municipio')[['Tamizados','Meta zona']]
-        st.bar_chart(bar_data)
+    mun_n = mun_base.merge(mun_actual, on='Municipio', how='left')
+    mun_n['Tamizados'] = mun_n['Tamizados'].fillna(0).astype(int)
+    mun_n['Pendientes'] = (mun_n['Meta zona'] - mun_n['Tamizados']).clip(lower=0)
+    mun_n['% avance']   = (mun_n['Tamizados'] / mun_n['Meta zona'] * 100).round(1)
+    mun_n = mun_n.sort_values('Tamizados', ascending=False)
+    st.dataframe(mun_n[['Municipio','Meta zona','Tamizados','Pendientes','% avance']],
+                 use_container_width=True, hide_index=True)
+
+    # Barras comparativas
+    bar_data = mun_n.set_index('Municipio')[['Tamizados','Meta zona']]
+    st.bar_chart(bar_data)
 
     st.markdown("---")
 
@@ -641,13 +738,28 @@ with tab_dur:
 
 # ── TAB 5: DUPLICADOS ──────────────────────────
 with tab_dups:
-    st.subheader("👥 Posibles Duplicados")
-    st.info("Recuerda: una misma mamá puede aparecer dos veces si tiene dos hijos y la encuestadora hizo submissions separadas. Verifica el nombre del niño antes de eliminar.")
+    st.subheader("👥 Duplicados")
     if f_dup.empty:
         st.success("✅ Sin duplicados detectados.")
     else:
-        cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio'] if c in f_dup.columns]
-        st.dataframe(f_dup[cols], use_container_width=True, hide_index=True)
+        dup_prob   = f_dup[f_dup['severidad']=='Alta']
+        dup_verif  = f_dup[f_dup['severidad']=='Media']
+
+        c1, c2 = st.columns(2)
+        c1.metric("🔴 Duplicados probables (eliminar)", dup_prob['nombre'].nunique() if not dup_prob.empty else 0, help="Misma madre, misma fecha, sin hijos distintos")
+        c2.metric("🟡 Verificar (posibles hijos distintos)", dup_verif['nombre'].nunique() if not dup_verif.empty else 0)
+
+        if not dup_prob.empty:
+            st.markdown("#### 🔴 Duplicados probables — recomendado eliminar")
+            st.caption("Misma madre, misma fecha. No se detectaron hijos distintos en el repeat group. Conserva el registro con más datos o el primero cronológicamente.")
+            cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','detalle'] if c in dup_prob.columns]
+            st.dataframe(dup_prob[cols], use_container_width=True, hide_index=True)
+
+        if not dup_verif.empty:
+            st.markdown("#### 🟡 Verificar antes de eliminar — posibles hijos distintos")
+            st.caption("Misma madre, misma fecha, pero se detectaron nombres de hijos distintos en los submissions. NO eliminar sin revisar.")
+            cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','detalle'] if c in dup_verif.columns]
+            st.dataframe(dup_verif[cols], use_container_width=True, hide_index=True)
 
 
 # ── TAB 6: OUTLIERS ────────────────────────────
@@ -688,18 +800,49 @@ with tab_out:
 
 # ── TAB 7: POR ENCUESTADORA ────────────────────
 with tab_enc:
-    st.subheader("👩‍💼 Métricas por Encuestadora")
-    st.dataframe(stats_enc(df), use_container_width=True, hide_index=True)
+    st.subheader("👩‍💼 Equipos y Encuestadoras")
+
+    # Estructura de equipos
+    st.markdown("**Estructura de equipos de campo**")
+    st.dataframe(DF_EQUIPOS, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Métricas de rendimiento
+    st.markdown("**Métricas de rendimiento por encuestadora**")
+    metricas = stats_enc(df)
+
+    # Cruzar con equipo/rol
+    metricas = metricas.merge(
+        DF_EQUIPOS[['Nombre','Rol','Equipo','Región']],
+        left_on='Encuestador/a', right_on='Nombre', how='left'
+    ).drop(columns=['Nombre'], errors='ignore')
+
+    # Reordenar columnas
+    col_orden = [c for c in ['Región','Equipo','Encuestador/a','Rol','Encuestas','Días campo',
+                              'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
+    st.dataframe(metricas[col_orden].sort_values(['Región','Equipo'], na_position='last'),
+                 use_container_width=True, hide_index=True)
+
+    # Encuestadoras en datos que no están en el directorio de equipos
+    enc_datos = set(df['encuestador'].dropna().astype(str).unique())
+    enc_plan  = set(DF_EQUIPOS['Nombre'].unique())
+    sin_equipo = enc_datos - enc_plan
+    if sin_equipo:
+        st.warning(f"⚠️ Encuestadoras en datos sin equipo asignado: {', '.join(sorted(sin_equipo))}")
+
     st.markdown("---")
     if not ninos.empty and 'encuestador' in ninos.columns:
         st.markdown("**Niños tamizados por encuestadora**")
         ne = ninos.groupby('encuestador').size().reset_index(name='Niños tamizados').sort_values('Niños tamizados', ascending=False)
         st.dataframe(ne, use_container_width=True, hide_index=True)
+
     st.markdown("**Encuestas por día y encuestadora**")
     pivot = df.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
     if not pivot.empty:
         pivot_w = pivot.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
         st.dataframe(pivot_w, use_container_width=True)
+
     if not todos.empty and 'encuestador' in todos.columns:
         st.markdown("**Flags por encuestadora**")
         fe = todos.groupby(['encuestador','severidad']).size().unstack(fill_value=0).reset_index()
