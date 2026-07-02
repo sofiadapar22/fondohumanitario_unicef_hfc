@@ -740,6 +740,67 @@ with tab_avance:
 
     st.markdown("---")
 
+    # ── Tabla de desagregación por sexo/edad ──
+    st.markdown("**📋 Tabla de desagregación por sexo y edad**")
+
+    def _sexo_es(serie, valores_m, valores_f):
+        """Normaliza y cuenta masculinos y femeninos."""
+        s = serie.astype(str).str.lower().str.strip()
+        m = s.isin(valores_m)
+        f = s.isin(valores_f)
+        return int(m.sum()), int(f.sum())
+
+    VAL_M = ['masculino','m','hombre','niño','male','masc']
+    VAL_F = ['femenino','f','mujer','niña','female','fem']
+
+    # Niños/Niñas (<5) — desde repeat group
+    if not ninos.empty and 'Sexo' in ninos.columns:
+        n_ninos_m, n_ninos_f = _sexo_es(ninos['Sexo'], VAL_M, VAL_F)
+    else:
+        n_ninos_m = n_ninos_f = 0
+
+    # Adultos — desde hoja principal, deduplicados por nombre
+    df_ad_u = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+    if 'sexo' in df_ad_u.columns:
+        n_adult_m, n_adult_f = _sexo_es(df_ad_u['sexo'], VAL_M, VAL_F)
+    else:
+        n_adult_m = n_adult_f = 0
+
+    # Consejería — hoja principal (todas las filas con consejería = Sí)
+    if 'consejeria' in df.columns:
+        df_cons = df[df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)]
+        df_cons_u = df_cons.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+        if 'sexo' in df_cons_u.columns:
+            cons_m, cons_f = _sexo_es(df_cons_u['sexo'], VAL_M, VAL_F)
+        else:
+            cons_m = cons_f = 0
+        total_cons = len(df_cons_u)
+    else:
+        cons_m = cons_f = total_cons = 0
+
+    tabla_desag = pd.DataFrame([
+        {
+            'Actividad':            'Personas tamizadas',
+            'Niños (<5)':           n_ninos_m,
+            'Niñas (<5)':           n_ninos_f,
+            'Mujeres (≥18)':        n_adult_f,
+            'Hombres (≥18)':        n_adult_m,
+            'Total':                n_ninos_m + n_ninos_f + n_adult_f + n_adult_m,
+        },
+        {
+            'Actividad':            'Personas que recibieron consejería',
+            'Niños (<5)':           '—',
+            'Niñas (<5)':           '—',
+            'Mujeres (≥18)':        cons_f,
+            'Hombres (≥18)':        cons_m,
+            'Total':                total_cons,
+        },
+    ])
+    st.dataframe(tabla_desag, use_container_width=True, hide_index=True)
+    st.caption("Niños/Niñas = menores de 5 años del repeat group. Mujeres/Hombres = personas entrevistadas, deduplicadas por nombre.")
+
+    st.markdown("---")
+
     # ── Gráfica avance diario ──
     st.markdown("**📅 Avance diario de niños tamizados**")
     if not ninos.empty and 'fecha_dia' in ninos.columns:
