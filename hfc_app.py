@@ -410,11 +410,11 @@ st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 15 noviembr
 dist_map, cant_map, us_map = cargar_catalogos()
 correcciones = cargar_correcciones()
 
+ADMIN_PIN = "fusal2026"   # ← cambia esto cuando quieras
+
 # ── SIDEBAR ──
 with st.sidebar:
     st.header("📂 Datos")
-    archivo = st.file_uploader("Export KoboToolbox (.xlsx)", type=['xlsx'])
-    st.markdown("---")
 
     n_corr_total = len(correcciones)
     if n_corr_total:
@@ -422,13 +422,38 @@ with st.sidebar:
     else:
         st.warning("⚠️ Sin correcciones_geograficas.csv")
 
-    # Debug: mostrar dónde buscó los archivos
-    with st.expander("🔧 Info de rutas (debug)"):
-        for fname in ['correcciones_geograficas.csv','distritos.csv','cantones.csv','unidadesdesalud.csv']:
-            p = _resolve(fname)
-            st.caption(f"{'✅' if p else '❌'} {fname}")
-        st.caption(f"cwd: {pathlib.Path.cwd()}")
-        st.caption(f"__file__: {pathlib.Path(__file__).parent}")
+    # ── Modo 1: datos publicados (visibles para todos) ──
+    archivo_repo = _resolve('datos_actuales.xlsx')
+    archivo = None
+
+    if archivo_repo:
+        st.success("📊 Datos publicados cargados")
+        import datetime
+        fecha_mod = datetime.datetime.fromtimestamp(
+            pathlib.Path(archivo_repo).stat().st_mtime
+        ).strftime('%d/%m/%Y %H:%M')
+        st.caption(f"Última actualización: {fecha_mod}")
+        archivo = archivo_repo   # se pasa como ruta string, se maneja abajo
+
+    else:
+        st.info("No hay datos publicados aún.\nSube `datos_actuales.xlsx` al repo de GitHub para que todos puedan ver los resultados.")
+
+    # ── Modo 2: admin — subir datos nuevos ──
+    st.markdown("---")
+    with st.expander("🔐 Actualizar datos (Admin)"):
+        pin = st.text_input("Clave de acceso", type="password", key="admin_pin")
+        if pin == ADMIN_PIN:
+            st.success("✅ Acceso admin")
+            archivo_admin = st.file_uploader("Sube export KoboToolbox (.xlsx)", type=['xlsx'], key="admin_upload")
+            if archivo_admin:
+                archivo = archivo_admin
+                st.success("Usando datos recién subidos (solo esta sesión)")
+                st.info(
+                    "Para que todos vean estos datos, súbelos a GitHub como `datos_actuales.xlsx` "
+                    "(Add file → Upload files → nombra el archivo exactamente así)."
+                )
+        elif pin:
+            st.error("Clave incorrecta")
 
     if archivo:
         df_raw, df_ninos_raw, df_sec3_raw = cargar_raw(archivo)
@@ -484,9 +509,15 @@ with st.sidebar:
 
 
 if not archivo:
-    st.info("👈 Sube el export de KoboToolbox para comenzar.")
-    with st.expander("Archivos necesarios en la misma carpeta"):
-        st.code("hfc_app.py\ncorrecciones_geograficas.csv\ndistritos.csv\ncantones.csv\nunidadesdesalud.csv")
+    st.info("📭 No hay datos disponibles aún.")
+    st.markdown("""
+    **Para administradores:** sube `datos_actuales.xlsx` al repositorio de GitHub
+    para que todos los usuarios puedan ver los resultados automáticamente.
+
+    O usa la sección **🔐 Actualizar datos** en el sidebar para ver datos en tu sesión.
+    """)
+    with st.expander("Archivos necesarios en el repositorio"):
+        st.code("hfc_app.py\ndatos_actuales.xlsx\ncorrecciones_geograficas.csv\ndistritos.csv\ncantones.csv\nunidadesdesalud.csv")
     st.stop()
 
 # Asignar vars filtradas
@@ -791,8 +822,13 @@ with tab_dur:
     c4.metric("No cerrados (>1000 min)", int((dur>=1000).sum()))
     if len(dur_v) > 0:
         hist, edges = np.histogram(dur_v.clip(upper=120), bins=range(0,125,5))
-        hdf = pd.DataFrame({'Rango': [f"{edges[i]}-{edges[i+1]}" for i in range(len(hist))], 'n': hist})
-        st.bar_chart(hdf.set_index('Rango'))
+        # Usar etiquetas con cero a la izquierda para que ordenen correctamente como texto
+        hdf = pd.DataFrame({
+            'Minutos': [f"{int(edges[i]):03d}-{int(edges[i+1]):03d}" for i in range(len(hist))],
+            'Entrevistas': hist
+        })
+        st.bar_chart(hdf.set_index('Minutos'))
+        st.caption("Eje X: rango de duración en minutos. La mayoría de entrevistas dura entre 5 y 15 minutos.")
     if not f_dur.empty:
         cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','duracion_min','flag'] if c in f_dur.columns]
         st.dataframe(f_dur[cols], use_container_width=True, hide_index=True)
@@ -1082,5 +1118,3 @@ with tab_export:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.success("✅ Sin flags — no hay reporte que exportar.")
-
-
