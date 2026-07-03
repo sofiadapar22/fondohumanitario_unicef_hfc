@@ -21,7 +21,7 @@ META_NINOS     = 3_500   # niños menores de 5 años
 META_MATERNAS  = 500     # embarazadas + madres lactantes (combinadas)
 META_REFERIDOS = 120
 META_DESNUT    = 120
-FECHA_LIMITE   = date(2026, 11, 15)
+FECHA_LIMITE   = date(2026, 11, 1)
 
 # Perfiles que cuentan como "maternas" tamizadas
 PERFILES_EMBARAZADA = ['Mujer embarazada',
