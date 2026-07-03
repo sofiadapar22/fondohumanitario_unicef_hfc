@@ -471,7 +471,7 @@ def calcular_proyeccion(actual, meta, tasa_dia, dias_sem, n_equipos):
 # INTERFAZ PRINCIPAL
 # ─────────────────────────────────────────────
 st.title("🔍 HFC · Línea de Base UNICEF US / FUSAL")
-st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 1 noviembre 2026")
+st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 15 noviembre 2026")
 
 dist_map, cant_map, us_map = cargar_catalogos()
 correcciones = cargar_correcciones()
@@ -1354,136 +1354,121 @@ with tab_geo_tab:
         st.markdown("**Para agregar una corrección:** abre `correcciones_geograficas.csv` en Excel, agrega una fila con el `_id` del submission y sube al repo.")
 
 
-# ── TAB 9: EXPORTAR ────────────────────────────
+# ── TAB 10: EXPORTAR ───────────────────────────
 with tab_export:
     st.subheader("📥 Exportar bases de datos")
+    st.caption(
+        "Una sola hoja consolidada: cada fila es un **niño** con los datos de su entrevista al lado. "
+        "Las personas sin niños (embarazadas, lactantes sin registro de niño) aparecen al final con campos de niño vacíos. "
+        "Se agregan columnas `hfc_*` con los resultados de limpieza."
+    )
 
-    # ── 1. MADRES / PERSONAS ENTREVISTADAS ──
-    st.markdown("### 👩 Madres / Personas entrevistadas")
-    st.caption("Una fila por entrevista. Incluye datos de la madre/cuidadora, perfil, medidas (si aplica) y geografía corregida.")
-    cols_madres = [c for c in [
-        '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
-        'nombre', 'sexo', 'perfil', 'telefono', 'sabe_leer',
-        'peso', 'talla', 'imc', 'eg_sem',
-        'referencia', 'consejeria', 'duracion_min'
-    ] if c in df.columns]
-    buf_madres = io.BytesIO()
-    df[cols_madres].to_excel(buf_madres, index=False); buf_madres.seek(0)
-    col1, col2 = st.columns([2,1])
-    with col1:
-        st.download_button("⬇️ Madres / Entrevistadas (.xlsx)", buf_madres, "madres_entrevistadas.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    with col2:
-        st.metric("Registros", len(df))
+    # ─── 1. Preparar columnas HFC desde df limpio ──────────────────────────────
+    ids_corregidos = set(corr['_id'].tolist()) if not corr.empty and '_id' in corr.columns else set()
 
-    st.markdown("---")
+    hfc_lookup = pd.DataFrame(index=df['_id'] if '_id' in df.columns else [])
+    if '_id' in df.columns:
+        hfc_lookup = df.set_index('_id')[[c for c in [
+            'nombre','encuestador','fecha_dia','Municipio','distrito_nombre','canton_nombre',
+            'unidad_nombre','perfil','consejeria','referencia','duracion_min',
+            'peso','talla','imc','eg_sem',
+        ] if c in df.columns]].rename(columns={
+            'nombre':           'hfc_nombre',
+            'encuestador':      'hfc_encuestador',
+            'fecha_dia':        'hfc_fecha_dia',
+            'Municipio':        'hfc_municipio',
+            'distrito_nombre':  'hfc_distrito',
+            'canton_nombre':    'hfc_canton',
+            'unidad_nombre':    'hfc_unidad_salud',
+            'perfil':           'hfc_perfil',
+            'consejeria':       'hfc_consejeria',
+            'referencia':       'hfc_referencia',
+            'duracion_min':     'hfc_duracion_min',
+            'peso':             'hfc_peso_madre_kg',
+            'talla':            'hfc_talla_madre_m',
+            'imc':              'hfc_imc_madre',
+            'eg_sem':           'hfc_eg_semanas',
+        })
+        hfc_lookup['hfc_geo_corregida'] = hfc_lookup.index.map(lambda x: x in ids_corregidos)
+        # Flag talla madre corregida
+        raw_talla_col = 'Talla (mts)'
+        if raw_talla_col in df_raw.columns and '_id' in df_raw.columns:
+            raw_t = df_raw.set_index('_id')[raw_talla_col]
+            hfc_lookup['hfc_talla_madre_corregida'] = hfc_lookup.index.map(
+                lambda x: bool(pd.notna(raw_t.get(x)) and float(raw_t.get(x) or 0) > 3)
+            )
+        # Flag duplicado
+        if not f_dup.empty and '_id' in f_dup.columns and 'severidad' in f_dup.columns:
+            dup_map = f_dup.drop_duplicates('_id').set_index('_id')['severidad']
+            hfc_lookup['hfc_duplicado'] = hfc_lookup.index.map(dup_map).fillna('')
+        else:
+            hfc_lookup['hfc_duplicado'] = ''
 
-    # ── 2. NIÑOS TAMIZADOS ──
-    st.markdown("### 👶 Niños tamizados")
-    st.caption("Una fila por niño. Incluye medidas antropométricas, diagnóstico nutricional y datos del hogar.")
-    if not ninos.empty:
-        cols_ninos = [c for c in [
-            '_submission_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre',
-            '¿Cuál es el nombre del niño/a?', 'Sexo',
-            'Fecha de nacimiento del niño a evaluar', 'edad_txt',
-            'peso_nino', 'talla_nino', 'muac',
-            '¿Cuál es el diagnóstico nutricional de la talla y edad?',
-            '¿Cuál es el diagnóstico nutricional de peso edad?',
-            '¿Cuál es el diagnóstico nutricional del peso y la talla?',
-            'Diagnóstico nutricional según perímetro braquial',
-            '¿Se brindó referencia?'
-        ] if c in ninos.columns]
-        buf_ninos = io.BytesIO()
-        ninos[cols_ninos].to_excel(buf_ninos, index=False); buf_ninos.seek(0)
-        col1, col2 = st.columns([2,1])
-        with col1:
-            st.download_button("⬇️ Niños tamizados (.xlsx)", buf_ninos, "ninos_tamizados.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        with col2:
-            st.metric("Niños", len(ninos))
-    else:
-        st.info("No se encontraron datos de niños en este archivo.")
+    # ─── 2. Combinar hojas crudas de niños ────────────────────────────────────
+    raw_ninos_all = pd.concat(
+        [s for s in [df_ninos_raw, df_sec3_raw] if not s.empty], ignore_index=True
+    ) if not df_ninos_raw.empty or not df_sec3_raw.empty else pd.DataFrame()
 
-    st.markdown("---")
+    # Agregar talla corregida desde ninos procesado
+    if not raw_ninos_all.empty and not ninos.empty and len(raw_ninos_all) == len(ninos):
+        raw_ninos_all['hfc_talla_nino_cm']       = ninos['talla_nino'].values
+        raw_ninos_all['hfc_talla_nino_corregida'] = ninos['talla_corregida'].values if 'talla_corregida' in ninos.columns else False
 
-    # ── 3. BASE CONSOLIDADA (madres + niños en un solo archivo) ──
-    st.markdown("### 📋 Base consolidada (madres + niños)")
-    st.caption("Una fila por niño con los datos de su madre/cuidadora. Las madres sin niños registrados aparecen al final con campos de niño vacíos.")
+    # ─── 3. JOIN: niños (raw) ← entrevista (raw + hfc) ───────────────────────
+    # Clave: raw_ninos._parent_index → df_raw._index → df_raw._id → hfc_lookup
+    if not raw_ninos_all.empty and '_parent_index' in raw_ninos_all.columns and '_index' in df_raw.columns:
+        # Mapa _index → _id en df_raw
+        idx_to_id = df_raw.set_index('_index')['_id'] if '_id' in df_raw.columns else pd.Series(dtype=int)
+        raw_ninos_all['_entrevista_id'] = raw_ninos_all['_parent_index'].map(idx_to_id)
 
-    if not ninos.empty:
-        # Columnas de la madre que se unen
-        cols_madre_join = [c for c in [
-            '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
-            'nombre', 'perfil', 'telefono', 'peso', 'talla', 'imc', 'eg_sem',
-            'referencia', 'consejeria', 'duracion_min'
-        ] if c in df.columns]
+        # Join con df_raw completo (todas las cols originales de la entrevista)
+        entrevista_export = df_raw.copy()
+        entrevista_export = entrevista_export.join(hfc_lookup, on='_id', how='left')
 
-        cols_nino_join = [c for c in [
-            '_submission_id',
-            '¿Cuál es el nombre del niño/a?', 'Sexo',
-            'Fecha de nacimiento del niño a evaluar', 'edad_txt',
-            'peso_nino', 'talla_nino', 'muac',
-            '¿Cuál es el diagnóstico nutricional de la talla y edad?',
-            '¿Cuál es el diagnóstico nutricional de peso edad?',
-            '¿Cuál es el diagnóstico nutricional del peso y la talla?',
-            'Diagnóstico nutricional según perímetro braquial',
-            '¿Se brindó referencia?'
-        ] if c in ninos.columns]
-
-        # Merge niños con madre
-        consolidado = ninos[cols_nino_join].merge(
-            df[cols_madre_join].rename(columns={'nombre': 'nombre_madre'}),
-            left_on='_submission_id', right_on='_id', how='left'
+        consolidado = raw_ninos_all.merge(
+            entrevista_export,
+            left_on='_entrevista_id', right_on='_id',
+            how='left',
+            suffixes=('_nino', '_entrevista')
         )
 
-        # Madres sin niños (left join inverso)
-        ids_con_ninos = set(ninos['_submission_id'].dropna().unique())
-        madres_sin_ninos = df[~df['_id'].isin(ids_con_ninos)][cols_madre_join].rename(columns={'nombre': 'nombre_madre'})
-        madres_sin_ninos['_submission_id'] = madres_sin_ninos['_id']
+        # Añadir personas sin niños (embarazadas solas, lactantes sin registro de niño)
+        ids_con_ninos = set(raw_ninos_all['_entrevista_id'].dropna().unique())
+        sin_ninos = entrevista_export[~entrevista_export['_id'].isin(ids_con_ninos)].copy()
+        consolidado = pd.concat([consolidado, sin_ninos], ignore_index=True)
 
-        consolidado = pd.concat([consolidado, madres_sin_ninos], ignore_index=True)
-
-        # Renombrar columnas para claridad
-        consolidado = consolidado.rename(columns={
-            'nombre_madre':                                   'Nombre madre/cuidadora',
-            '¿Cuál es el nombre del niño/a?':                'Nombre niño/a',
-            'edad_txt':                                       'Edad niño/a',
-            'Fecha de nacimiento del niño a evaluar':        'Fecha nacimiento niño/a',
-            'peso_nino':                                      'Peso niño (kg)',
-            'talla_nino':                                     'Talla niño (cm)',
-            '¿Cuál es el diagnóstico nutricional de la talla y edad?': 'Diagnóstico talla/edad',
-            '¿Cuál es el diagnóstico nutricional de peso edad?':       'Diagnóstico peso/edad',
-            '¿Cuál es el diagnóstico nutricional del peso y la talla?':'Diagnóstico peso/talla',
-            'Diagnóstico nutricional según perímetro braquial':        'Diagnóstico MUAC',
-            '¿Se brindó referencia?':                                  'Referencia niño/a',
-        })
-
-        # Orden de columnas
-        orden = [c for c in [
-            '_id', 'fecha_dia', 'encuestador', 'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
-            'Nombre madre/cuidadora', 'perfil', 'telefono',
-            'Nombre niño/a', 'Edad niño/a', 'Fecha nacimiento niño/a',
-            'Peso niño (kg)', 'Talla niño (cm)', 'muac',
-            'Diagnóstico talla/edad', 'Diagnóstico peso/edad', 'Diagnóstico peso/talla', 'Diagnóstico MUAC',
-            'Referencia niño/a', 'referencia', 'consejeria', 'duracion_min'
-        ] if c in consolidado.columns]
-
-        buf_cons = io.BytesIO()
-        consolidado[orden].to_excel(buf_cons, index=False); buf_cons.seek(0)
-        col1, col2, col3 = st.columns([2,1,1])
-        with col1:
-            st.download_button("⬇️ Base consolidada (.xlsx)", buf_cons, "base_consolidada.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        with col2:
-            st.metric("Filas (niños + madres sin niños)", len(consolidado))
-        with col3:
-            st.metric("IDs únicos", consolidado['_id'].nunique() if '_id' in consolidado.columns else 0)
+    elif not raw_ninos_all.empty:
+        # Fallback: solo niños con hfc cols pegadas por posición
+        consolidado = raw_ninos_all.copy()
+        consolidado = consolidado.join(hfc_lookup.reset_index(drop=True), how='left')
     else:
-        st.info("Se necesitan datos de niños para generar la base consolidada.")
+        # Solo entrevistas, sin niños
+        consolidado = df_raw.copy().join(hfc_lookup, on='_id', how='left')
+
+    # ─── 4. Botón de descarga ─────────────────────────────────────────────────
+    st.markdown("### 📋 Base consolidada (niños + entrevista) con limpieza HFC")
+    c1, c2, c3 = st.columns([3, 1, 1])
+    c1.caption(f"{len(consolidado)} filas · {len(consolidado.columns)} columnas")
+    c2.metric("Filas", len(consolidado))
+    c3.metric("Columnas", len(consolidado.columns))
+
+    buf_cons = io.BytesIO()
+    consolidado.to_excel(buf_cons, index=False); buf_cons.seek(0)
+    st.download_button(
+        "⬇️ Base consolidada HFC (.xlsx)", buf_cons,
+        "base_consolidada_hfc.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    with st.expander("👁️ Vista previa (primeras 10 filas)"):
+        # Mostrar solo columnas hfc_* + identificadores para no saturar
+        preview_cols = ['_id'] + [c for c in consolidado.columns if c.startswith('hfc_')]
+        st.dataframe(consolidado[[c for c in preview_cols if c in consolidado.columns]].head(10),
+                     use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
-    # ── 4. REPORTE DE FLAGS ──
+    # ── REPORTE DE FLAGS ──────────────────────────────────────────────────────
     st.markdown("### 🚦 Reporte de flags HFC")
     if not todos.empty:
         cols_f = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag','severidad'] if c in todos.columns]
