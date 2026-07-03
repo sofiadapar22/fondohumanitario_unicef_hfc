@@ -21,7 +21,7 @@ META_NINOS     = 3_500   # niños menores de 5 años
 META_MATERNAS  = 500     # embarazadas + madres lactantes (combinadas)
 META_REFERIDOS = 120
 META_DESNUT    = 120
-FECHA_LIMITE   = date(2026, 11, 1)
+FECHA_LIMITE   = date(2026, 11, 15)
 
 # Perfiles que cuentan como "maternas" tamizadas
 PERFILES_EMBARAZADA = ['Mujer embarazada',
@@ -227,6 +227,13 @@ def construir_ninos(df_ninos, df_sec3, df_main):
     ninos['peso_nino']  = pd.to_numeric(ninos.get('¿Cuál es el peso en Kg del niño/a?'),  errors='coerce')
     ninos['talla_nino'] = pd.to_numeric(ninos.get('¿Cuál es la talla en cm del niño/a?'), errors='coerce')
     ninos['muac']       = pd.to_numeric(ninos.get('Medida del perímetro braquial en cm'),  errors='coerce')
+
+    # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
+    # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
+    mask_talla_err = ninos['talla_nino'] > 200
+    ninos.loc[mask_talla_err, 'talla_nino'] = ninos.loc[mask_talla_err, 'talla_nino'] / 10
+    ninos['talla_corregida'] = mask_talla_err  # flag para mostrar en Flags HFC
+
     return ninos
 
 
@@ -415,7 +422,7 @@ def calcular_proyeccion(actual, meta, tasa_dia, dias_sem, n_equipos):
 # INTERFAZ PRINCIPAL
 # ─────────────────────────────────────────────
 st.title("🔍 HFC · Línea de Base UNICEF US / FUSAL")
-st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 1 noviembre 2026")
+st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 15 noviembre 2026")
 
 dist_map, cant_map, us_map = cargar_catalogos()
 correcciones = cargar_correcciones()
@@ -837,7 +844,7 @@ with tab_escenarios:
     - **C2** 📱 Seguimiento virtual — llamada/WhatsApp
     - **C3** 🏥 Retamizaje en campo — segunda medición
 
-    > Las 4,000 personas deben completar los **3 contactos** antes del **1 noviembre 2026**
+    > Las 4,000 personas deben completar los **3 contactos** antes del **15 noviembre 2026**
     """)
 
     # Equipo actual
@@ -1030,7 +1037,19 @@ with tab_out:
     if resumen_n:
         st.dataframe(pd.DataFrame(resumen_n), use_container_width=True, hide_index=True)
 
-    st.markdown("**Niños con medidas fuera de rango**")
+    # Tallas auto-corregidas (ingresadas sin decimal)
+    if not ninos.empty and 'talla_corregida' in ninos.columns:
+        corr_talla = ninos[ninos['talla_corregida'] == True]
+        if not corr_talla.empty:
+            st.warning(f"⚠️ {len(corr_talla)} tallas de niños auto-corregidas (valor ingresado sin punto decimal, ej: 915 → 91.5 cm)")
+            cols_ct = [c for c in ['¿Cuál es el nombre del niño/a?','fecha_dia','Municipio','peso_nino','talla_nino'] if c in corr_talla.columns]
+            ct_show = corr_talla[cols_ct].copy()
+            ct_show.columns = [c.replace('¿Cuál es el nombre del niño/a?','Nombre niño/a')
+                                 .replace('fecha_dia','Fecha').replace('peso_nino','Peso (kg)')
+                                 .replace('talla_nino','Talla corregida (cm)') for c in ct_show.columns]
+            st.dataframe(ct_show, use_container_width=True, hide_index=True)
+
+    st.markdown("**Niños con medidas fuera de rango (tras corrección)**")
     if not ninos.empty:
         mask_n = (
             (ninos['peso_nino'].notna() & ((ninos['peso_nino']<3)|(ninos['peso_nino']>35))) |
