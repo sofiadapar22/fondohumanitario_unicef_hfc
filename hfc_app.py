@@ -21,7 +21,12 @@ META_NINOS     = 3_500   # niños menores de 5 años
 META_MATERNAS  = 500     # embarazadas + madres lactantes (combinadas)
 META_REFERIDOS = 120
 META_DESNUT    = 120
-FECHA_LIMITE   = date(2026, 11, 15)
+
+# Fechas límite por contacto
+FECHA_C1      = date(2026,  7, 30)   # C1: tamizaje en campo
+FECHA_C2      = date(2026,  9, 15)   # C2: charla presencial en comunidades
+FECHA_C3      = date(2026, 10, 21)   # C3: retamizaje en campo
+FECHA_LIMITE  = date(2026, 11,  1)   # cierre general del proyecto
 
 # Perfiles que cuentan como "maternas" tamizadas
 PERFILES_EMBARAZADA = ['Mujer embarazada',
@@ -389,31 +394,75 @@ def stats_enc(df):
 
 
 # ─────────────────────────────────────────────
-# PROYECCIÓN
+# PROYECCIÓN — modelo de 3 contactos con fechas fijas
 # ─────────────────────────────────────────────
+def _dias_habiles_entre(inicio: date, fin: date, dias_sem: int) -> int:
+    """Días de campo disponibles entre dos fechas, dado días/semana de trabajo."""
+    total_cal = max((fin - inicio).days, 0)
+    semanas   = total_cal / 7
+    return int(semanas * dias_sem)
+
 def calcular_proyeccion(actual, meta, tasa_dia, dias_sem, n_equipos):
-    hoy = date.today()
+    """
+    Proyecta si el equipo puede completar los 3 contactos dentro de las fechas límite.
+
+    C1 (tamizaje campo):          hoy → FECHA_C1  (30 jul)
+    C2 (charla presencial):  FECHA_C1 → FECHA_C2  (15 sep)
+    C3 (retamizaje campo):   FECHA_C2 → FECHA_C3  (21 oct)
+    """
+    hoy           = date.today()
     cap_dia_total = tasa_dia * n_equipos
     cap_sem       = cap_dia_total * dias_sem
-    restante_c1   = max(meta - actual, 0)
 
     if cap_dia_total <= 0 or dias_sem <= 0:
-        return {'cap_dia': 0, 'cap_sem': 0, 'fecha_fin_c1': None, 'fecha_fin_c3': None, 'cumple': False}
+        return {
+            'cap_dia': 0, 'cap_sem': 0,
+            'fecha_fin_c1': None, 'fecha_fin_c2': None, 'fecha_fin_c3': None,
+            'cap_c1': 0, 'cap_c2': 0, 'cap_c3': 0,
+            'cumple_c1': False, 'cumple_c2': False, 'cumple_c3': False, 'cumple': False,
+        }
 
-    dias_campo_c1  = restante_c1 / cap_dia_total
-    dias_cal_c1    = (dias_campo_c1 / dias_sem) * 7
-    fecha_fin_c1   = hoy + timedelta(days=int(dias_cal_c1)) if dias_cal_c1 < 3650 else None
+    # ── C1: tamizajes restantes dentro de la ventana hoy→FECHA_C1 ──
+    restante_c1    = max(meta - actual, 0)
+    dias_c1        = _dias_habiles_entre(hoy, FECHA_C1, dias_sem)
+    cap_c1         = cap_dia_total * dias_c1          # capacidad total en ventana C1
+    cumple_c1      = cap_c1 >= restante_c1
+    # fecha proyectada en que termina C1 (si hay capacidad)
+    if cap_dia_total > 0:
+        dias_campo_c1  = restante_c1 / cap_dia_total
+        dias_cal_c1    = int((dias_campo_c1 / dias_sem) * 7) if dias_sem > 0 else 0
+        fecha_fin_c1   = hoy + timedelta(days=dias_cal_c1) if dias_cal_c1 < 3650 else None
+    else:
+        fecha_fin_c1   = None
 
-    dias_campo_c3  = meta / cap_dia_total
-    dias_cal_c3    = (dias_campo_c3 / dias_sem) * 7
-    fecha_fin_c3   = fecha_fin_c1 + timedelta(days=int(dias_cal_c3)) if fecha_fin_c1 and dias_cal_c3 < 3650 else None
+    # ── C2: charla presencial — mismas 4,000 personas, ventana C1→C2 ──
+    dias_c2   = _dias_habiles_entre(FECHA_C1, FECHA_C2, dias_sem)
+    cap_c2    = cap_dia_total * dias_c2
+    cumple_c2 = cap_c2 >= meta
+    dias_cal_c2   = int((meta / cap_dia_total / dias_sem) * 7) if cap_dia_total > 0 else 0
+    fecha_fin_c2  = FECHA_C1 + timedelta(days=dias_cal_c2) if dias_cal_c2 < 3650 else None
 
-    cumple = fecha_fin_c3 is not None and fecha_fin_c3 <= FECHA_LIMITE
+    # ── C3: retamizaje — mismas 4,000 personas, ventana C2→C3 ──
+    dias_c3   = _dias_habiles_entre(FECHA_C2, FECHA_C3, dias_sem)
+    cap_c3    = cap_dia_total * dias_c3
+    cumple_c3 = cap_c3 >= meta
+    dias_cal_c3   = int((meta / cap_dia_total / dias_sem) * 7) if cap_dia_total > 0 else 0
+    fecha_fin_c3  = FECHA_C2 + timedelta(days=dias_cal_c3) if dias_cal_c3 < 3650 else None
+
+    cumple = cumple_c1 and cumple_c2 and cumple_c3
+
     return {
         'cap_dia':      int(cap_dia_total),
         'cap_sem':      int(cap_sem),
         'fecha_fin_c1': fecha_fin_c1,
+        'fecha_fin_c2': fecha_fin_c2,
         'fecha_fin_c3': fecha_fin_c3,
+        'cap_c1':       int(cap_c1),
+        'cap_c2':       int(cap_c2),
+        'cap_c3':       int(cap_c3),
+        'cumple_c1':    cumple_c1,
+        'cumple_c2':    cumple_c2,
+        'cumple_c3':    cumple_c3,
         'cumple':       cumple,
     }
 
@@ -585,9 +634,10 @@ tasa_actual     = total_tamizados / dias_campo if dias_campo > 0 else 0
 # ══════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════
-tab_avance, tab_escenarios, tab_flags, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export = st.tabs([
+tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export = st.tabs([
     "📊 Avance General",
     "🎯 Proyección & Escenarios",
+    "🥗 Indicadores Nutricionales",
     "🚦 Flags HFC",
     "⏱️ Duración",
     "👥 Duplicados",
@@ -839,12 +889,19 @@ with tab_avance:
 # ── TAB 2: PROYECCIÓN ──────────────────────────
 with tab_escenarios:
     st.subheader("🎯 Proyección a Meta — Modelo de 3 Contactos")
-    st.markdown("""
-    - **C1** 🏥 Tamizaje 1 en campo — medición peso, talla, MUAC
-    - **C2** 📱 Seguimiento virtual — llamada/WhatsApp
-    - **C3** 🏥 Retamizaje en campo — segunda medición
 
-    > Las 4,000 personas deben completar los **3 contactos** antes del **15 noviembre 2026**
+    col_tl1, col_tl2, col_tl3, col_tl4 = st.columns(4)
+    col_tl1.metric("📅 Cierre C1 (tamizaje)",    FECHA_C1.strftime("%d %b %Y"),  help="Tamizaje campo: peso, talla, MUAC")
+    col_tl2.metric("📅 Cierre C2 (charla)",       FECHA_C2.strftime("%d %b %Y"),  help="Charla presencial en comunidades ya visitadas")
+    col_tl3.metric("📅 Cierre C3 (retamizaje)",   FECHA_C3.strftime("%d %b %Y"),  help="Segunda medición en campo")
+    col_tl4.metric("🏁 Cierre proyecto",           FECHA_LIMITE.strftime("%d %b %Y"))
+
+    st.markdown("""
+    | Contacto | Modalidad | Ventana | Descripción |
+    |----------|-----------|---------|-------------|
+    | **C1** 🏥 | Presencial campo | hoy → 30 jul | Tamizaje: peso, talla, MUAC |
+    | **C2** 🏘️ | Presencial comunidad | 30 jul → 15 sep | Charla en las comunidades visitadas (no es tamizaje) |
+    | **C3** 🏥 | Presencial campo | 15 sep → 21 oct | Retamizaje: segunda medición |
     """)
 
     # Equipo actual
@@ -927,13 +984,16 @@ with tab_escenarios:
     todos_esc = {**escenarios_eq, f'🧍 Individual ({n_ind} personas)': escenario_ind}
     filas = []
     for nombre, e in todos_esc.items():
+        def _fmt(d): return d.strftime('%d/%m/%Y') if d else '⚠️'
+        def _cumple(ok): return '✅' if ok else '❌'
         filas.append({
-            'Escenario':         nombre,
-            'Cap. diaria total': e['cap_dia'],
-            'Cap. semanal':      e['cap_sem'],
-            'Fin C1':            e['fecha_fin_c1'].strftime('%d/%m/%Y') if e['fecha_fin_c1'] else '⚠️',
-            'Fin C3':            e['fecha_fin_c3'].strftime('%d/%m/%Y') if e['fecha_fin_c3'] else '⚠️',
-            '✅ Cumple Nov 15':  '✅ Sí' if e['cumple'] else '❌ No',
+            'Escenario':          nombre,
+            'Cap./día':           e['cap_dia'],
+            'Cap./semana':        e['cap_sem'],
+            f"C1 ≤ {FECHA_C1.strftime('%d/%m')}":  _cumple(e['cumple_c1']) + ' ' + _fmt(e['fecha_fin_c1']),
+            f"C2 ≤ {FECHA_C2.strftime('%d/%m')}":  _cumple(e['cumple_c2']) + ' ' + _fmt(e['fecha_fin_c2']),
+            f"C3 ≤ {FECHA_C3.strftime('%d/%m')}":  _cumple(e['cumple_c3']) + ' ' + _fmt(e['fecha_fin_c3']),
+            '🏁 Cumple todo':     '✅ Sí' if e['cumple'] else '❌ No',
         })
     st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
     st.markdown("---")
@@ -941,18 +1001,161 @@ with tab_escenarios:
     for nombre, e in todos_esc.items():
         color = "#d1fae5" if e['cumple'] else "#fee2e2"
         icono = "✅" if e['cumple'] else "❌"
+        def _fmt(d): return d.strftime('%d %b %Y') if d else 'fuera de rango'
+        def _ok(ok, label, limit): return f"{'✅' if ok else '❌'} {label}: <b>{_fmt(e[f'fecha_fin_{label.lower()}'])}</b> (límite {limit.strftime('%d/%m')})"
         st.markdown(f"""
         <div style="background:{color};border-radius:8px;padding:12px 16px;margin:6px 0;">
-        <strong>{nombre}</strong> — {icono} {'Cumple deadline' if e['cumple'] else 'NO cumple deadline'}<br>
+        <strong>{nombre}</strong> — {icono} {'Cumple todos los deadlines' if e['cumple'] else 'NO cumple todos los deadlines'}<br>
         <small>
-        C1 termina: <b>{e['fecha_fin_c1'].strftime('%d %b %Y') if e['fecha_fin_c1'] else 'fuera de rango'}</b> &nbsp;·&nbsp;
-        C3 termina: <b>{e['fecha_fin_c3'].strftime('%d %b %Y') if e['fecha_fin_c3'] else 'fuera de rango'}</b> &nbsp;·&nbsp;
-        Capacidad: <b>{e['cap_dia']} tamizajes/día · {e['cap_sem']}/semana</b>
+        {'✅' if e['cumple_c1'] else '❌'} C1 termina: <b>{_fmt(e['fecha_fin_c1'])}</b> (límite {FECHA_C1.strftime('%d/%m')}) &nbsp;·&nbsp;
+        {'✅' if e['cumple_c2'] else '❌'} C2 termina: <b>{_fmt(e['fecha_fin_c2'])}</b> (límite {FECHA_C2.strftime('%d/%m')}) &nbsp;·&nbsp;
+        {'✅' if e['cumple_c3'] else '❌'} C3 termina: <b>{_fmt(e['fecha_fin_c3'])}</b> (límite {FECHA_C3.strftime('%d/%m')}) &nbsp;·&nbsp;
+        Capacidad: <b>{e['cap_dia']} /día · {e['cap_sem']}/semana</b>
         </small></div>
         """, unsafe_allow_html=True)
 
 
-# ── TAB 3: FLAGS ───────────────────────────────
+# ── TAB 3: INDICADORES NUTRICIONALES ───────────
+with tab_indicadores:
+    st.subheader("🥗 Indicadores Nutricionales — Niños <5 años")
+
+    if ninos.empty:
+        st.info("Sin datos de niños disponibles.")
+    else:
+        # ── Resumen de medidas ──
+        st.markdown("### 📏 Resumen de medidas antropométricas")
+        med_data = []
+        for col, lbl, unidad in [
+            ('peso_nino',  'Peso',  'kg'),
+            ('talla_nino', 'Talla', 'cm'),
+            ('muac',       'MUAC (perímetro braquial)', 'cm'),
+        ]:
+            s = ninos[col].dropna() if col in ninos.columns else pd.Series(dtype=float)
+            if not s.empty:
+                med_data.append({
+                    'Medida': f"{lbl} ({unidad})",
+                    'N con dato': len(s),
+                    '% con dato': f"{len(s)/len(ninos)*100:.0f}%",
+                    'Mín':    round(s.min(), 1),
+                    'P25':    round(s.quantile(0.25), 1),
+                    'Mediana':round(s.median(), 1),
+                    'P75':    round(s.quantile(0.75), 1),
+                    'Máx':    round(s.max(), 1),
+                })
+        if med_data:
+            st.dataframe(pd.DataFrame(med_data), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # ── Distribución de diagnósticos ──
+        st.markdown("### 🩺 Distribución de diagnósticos nutricionales")
+
+        DIAG_COLS = {
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?':  'Talla/Edad (T/E)',
+            '¿Cuál es el diagnóstico nutricional de peso edad?':         'Peso/Edad (P/E)',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?':  'Peso/Talla (P/T)',
+            'Diagnóstico nutricional según perímetro braquial':           'MUAC',
+        }
+
+        diag_resumen = []
+        for col_raw, etiqueta in DIAG_COLS.items():
+            col_diag = None
+            # Buscar en ninos directo
+            if col_raw in ninos.columns:
+                col_diag = ninos[col_raw]
+            if col_diag is not None and col_diag.notna().any():
+                counts = col_diag.value_counts(dropna=True)
+                total_diag = counts.sum()
+                for diag, cnt in counts.items():
+                    diag_resumen.append({
+                        'Indicador': etiqueta,
+                        'Diagnóstico': str(diag),
+                        'N': int(cnt),
+                        '%': f"{cnt/total_diag*100:.1f}%",
+                    })
+
+        if diag_resumen:
+            df_diag = pd.DataFrame(diag_resumen)
+            # Mostrar por indicador en columnas
+            col_te, col_pe, col_pt = st.columns(3)
+            for col_widget, indicador in [(col_te,'Talla/Edad (T/E)'), (col_pe,'Peso/Edad (P/E)'), (col_pt,'Peso/Talla (P/T)')]:
+                sub = df_diag[df_diag['Indicador']==indicador][['Diagnóstico','N','%']]
+                if not sub.empty:
+                    col_widget.markdown(f"**{indicador}**")
+                    col_widget.dataframe(sub, use_container_width=True, hide_index=True)
+
+            muac_sub = df_diag[df_diag['Indicador']=='MUAC'][['Diagnóstico','N','%']]
+            if not muac_sub.empty:
+                st.markdown("**MUAC (perímetro braquial)**")
+                st.dataframe(muac_sub, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay datos de diagnóstico nutricional en la base actual.")
+
+        st.markdown("---")
+
+        # ── Tabla cruzada: diagnósticos por zona ──
+        st.markdown("### 📍 Diagnóstico P/T por zona (desnutrición aguda)")
+        col_pt_raw = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+        if col_pt_raw in ninos.columns and 'Municipio' in ninos.columns:
+            tabla_zona = pd.crosstab(
+                ninos['Municipio'].fillna('Sin zona'),
+                ninos[col_pt_raw].fillna('Sin dato')
+            )
+            tabla_zona['TOTAL'] = tabla_zona.sum(axis=1)
+            st.dataframe(tabla_zona, use_container_width=True)
+        else:
+            st.info("Sin columnas de diagnóstico o municipio disponibles.")
+
+        st.markdown("---")
+
+        # ── Histogramas ──
+        st.markdown("### 📊 Distribución de peso y talla")
+        col_h1, col_h2 = st.columns(2)
+
+        with col_h1:
+            st.markdown("**Peso (kg)**")
+            if 'peso_nino' in ninos.columns:
+                p = ninos['peso_nino'].dropna()
+                p = p[(p >= 2) & (p <= 35)]
+                if not p.empty:
+                    hist_p, edges_p = np.histogram(p, bins=range(2, 36, 2))
+                    hp_df = pd.DataFrame({
+                        'kg': [f"{int(edges_p[i])}-{int(edges_p[i+1])}" for i in range(len(hist_p))],
+                        'Niños': hist_p,
+                    })
+                    st.bar_chart(hp_df.set_index('kg'))
+
+        with col_h2:
+            st.markdown("**Talla (cm)**")
+            if 'talla_nino' in ninos.columns:
+                t = ninos['talla_nino'].dropna()
+                t = t[(t >= 40) & (t <= 130)]
+                if not t.empty:
+                    hist_t, edges_t = np.histogram(t, bins=range(40, 135, 5))
+                    ht_df = pd.DataFrame({
+                        'cm': [f"{int(edges_t[i])}-{int(edges_t[i+1])}" for i in range(len(hist_t))],
+                        'Niños': hist_t,
+                    })
+                    st.bar_chart(ht_df.set_index('cm'))
+
+        # ── Indicadores de madres (embarazadas) ──
+        st.markdown("---")
+        st.markdown("### 🤰 Indicadores de mujeres embarazadas")
+        df_emb = df[df['perfil'].isin(PERFILES_EMBARAZADA)].copy() if 'perfil' in df.columns else pd.DataFrame()
+        if not df_emb.empty and 'talla' in df_emb.columns and 'peso' in df_emb.columns:
+            emb_med = []
+            for col, lbl, unidad in [('peso','Peso','kg'),('talla','Talla','m'),('imc','IMC',''),('eg_sem','Edad gestacional','sem')]:
+                s = df_emb[col].dropna() if col in df_emb.columns else pd.Series(dtype=float)
+                if not s.empty:
+                    emb_med.append({'Medida':f"{lbl} ({unidad})" if unidad else lbl,
+                                    'N':len(s),'Mín':round(s.min(),2),'Mediana':round(s.median(),2),'Máx':round(s.max(),2)})
+            if emb_med:
+                st.dataframe(pd.DataFrame(emb_med), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos de embarazadas en la base actual.")
+
+
+# ── TAB 4: FLAGS ───────────────────────────────
 with tab_flags:
     st.subheader("🚦 Resumen de Flags de Calidad")
     c1,c2,c3,c4 = st.columns(4)
@@ -973,7 +1176,7 @@ with tab_flags:
         st.dataframe(todos[cols].sort_values('severidad'), use_container_width=True, hide_index=True)
 
 
-# ── TAB 4: DURACIÓN ────────────────────────────
+# ── TAB 5: DURACIÓN ────────────────────────────
 with tab_dur:
     st.subheader("⏱️ Duración de Entrevistas")
     dur = df['duracion_min'].dropna()
