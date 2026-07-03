@@ -1364,7 +1364,7 @@ with tab_export:
     )
 
     # ─── 1. Preparar columnas HFC desde df limpio ──────────────────────────────
-    ids_corregidos = set(corr['_id'].tolist()) if not corr.empty and '_id' in corr.columns else set()
+    ids_corregidos = set(correcciones['_id'].tolist()) if not correcciones.empty and '_id' in correcciones.columns else set()
 
     hfc_lookup = pd.DataFrame(index=df['_id'] if '_id' in df.columns else [])
     if '_id' in df.columns:
