@@ -415,7 +415,7 @@ def calcular_proyeccion(actual, meta, tasa_dia, dias_sem, n_equipos):
 # INTERFAZ PRINCIPAL
 # ─────────────────────────────────────────────
 st.title("🔍 HFC · Línea de Base UNICEF US / FUSAL")
-st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 15 noviembre 2026")
+st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 1 noviembre 2026")
 
 dist_map, cant_map, us_map = cargar_catalogos()
 correcciones = cargar_correcciones()
@@ -837,7 +837,7 @@ with tab_escenarios:
     - **C2** 📱 Seguimiento virtual — llamada/WhatsApp
     - **C3** 🏥 Retamizaje en campo — segunda medición
 
-    > Las 4,000 personas deben completar los **3 contactos** antes del **15 noviembre 2026**
+    > Las 4,000 personas deben completar los **3 contactos** antes del **1 noviembre 2026**
     """)
 
     # Equipo actual
