@@ -931,44 +931,80 @@ with tab_avance:
         col_p3.metric("% completado", f"{pct_cum}%")
         st.progress(min(pct_cum / 100, 1.0))
 
-        # ── Construir dataframe para el gráfico ──────────────────────────────
-        # Serie histórica
-        hist = cum[['fecha_dia','Avance Acumulado']].copy()
-        hist['Meta Total']         = META_TAMIZAJE
-        hist['Proyección de C1']   = None
+        # ── Tasas ────────────────────────────────────────────────────────────
+        hoy           = date.today()
+        dias_hasta_c1 = max((FECHA_C1 - hoy).days, 1)
 
-        # Proyección desde hoy hasta FECHA_C1
-        # Tasa = promedio diario de campo de los últimos 7 días con datos
+        # Tasa actual = promedio de los últimos 7 días con datos
         dias_recientes = cum.tail(min(7, len(cum)))
-        tasa_reciente  = dias_recientes['n'].mean()  # tamizajes/día de campo
+        tasa_reciente  = dias_recientes['n'].mean()
 
-        # Días de campo restantes hasta FECHA_C1 (excluyendo domingos como proxy)
-        hoy = date.today()
-        dias_hasta_c1 = (FECHA_C1 - hoy).days
-        # Generar fechas de proyección
-        fechas_proy = [hoy + timedelta(days=i) for i in range(1, dias_hasta_c1 + 1)]
-        vals_proy   = [min(ultimo_val + tasa_reciente * (i), META_TAMIZAJE) for i, _ in enumerate(fechas_proy, 1)]
+        # Tasa ideal = cuánto hay que hacer por día calendario para llegar a meta en FECHA_C1
+        restante       = max(META_TAMIZAJE - ultimo_val, 0)
+        tasa_ideal     = restante / dias_hasta_c1
 
-        proy = pd.DataFrame({
-            'fecha_dia':           pd.to_datetime(fechas_proy),
-            'Avance Acumulado':    None,
-            'Meta Total':          META_TAMIZAJE,
-            'Proyección de C1':    vals_proy,
-        })
+        # Fecha en que se alcanza la meta con el ritmo actual
+        if tasa_reciente > 0:
+            dias_para_meta = restante / tasa_reciente
+            fecha_meta_actual = hoy + timedelta(days=int(dias_para_meta))
+        else:
+            fecha_meta_actual = None
 
-        # Combinar
-        chart_df = pd.concat([hist, proy], ignore_index=True)
-        chart_df = chart_df.set_index('fecha_dia').sort_index()
+        # ── Serie histórica ───────────────────────────────────────────────────
+        hist = cum[['fecha_dia','Avance Acumulado']].copy()
+        hist['Meta Total']            = META_TAMIZAJE
+        hist['Ritmo actual']          = None
+        hist['Ritmo ideal (meta)']    = None
 
-        # Agregar punto de unión (último dato real también en proyección)
-        chart_df.loc[pd.Timestamp(ultima_fecha), 'Proyección de C1'] = ultimo_val
+        # ── Proyección con ritmo actual — hasta alcanzar la meta o 120 días ──
+        dias_proy_actual = int(dias_para_meta) + 5 if tasa_reciente > 0 else dias_hasta_c1
+        fechas_actual = [hoy + timedelta(days=i) for i in range(1, dias_proy_actual + 1)]
+        vals_actual   = [min(ultimo_val + tasa_reciente * i, META_TAMIZAJE) for i in range(1, dias_proy_actual + 1)]
 
-        st.line_chart(chart_df[['Avance Acumulado','Proyección de C1','Meta Total']])
-        st.caption(
-            f"Tasa reciente: **{tasa_reciente:.0f} tamizajes/día de campo** · "
-            f"Proyección al {FECHA_C1.strftime('%d/%m')}: **{min(int(ultimo_val + tasa_reciente * dias_hasta_c1), META_TAMIZAJE):,}** · "
-            f"Faltan **{max(META_TAMIZAJE - ultimo_val, 0):,}** tamizajes"
-        )
+        # ── Proyección ideal — desde hoy hasta FECHA_C1 ──────────────────────
+        fechas_ideal = [hoy + timedelta(days=i) for i in range(1, dias_hasta_c1 + 1)]
+        vals_ideal   = [min(ultimo_val + tasa_ideal * i, META_TAMIZAJE) for i in range(1, dias_hasta_c1 + 1)]
+
+        # ── Unir todas las fechas en un solo df ──────────────────────────────
+        todas_fechas = sorted(set(
+            list(hist['fecha_dia']) +
+            [pd.Timestamp(f) for f in fechas_actual] +
+            [pd.Timestamp(f) for f in fechas_ideal]
+        ))
+        chart_df = pd.DataFrame(index=pd.to_datetime(todas_fechas))
+        chart_df.index.name = 'fecha'
+
+        # Acumulado histórico
+        hist_idx = hist.set_index('fecha_dia')['Avance Acumulado']
+        chart_df['Avance Acumulado'] = chart_df.index.map(hist_idx)
+
+        # Meta
+        chart_df['Meta Total'] = META_TAMIZAJE
+
+        # Ritmo actual (desde último dato real)
+        actual_idx = pd.Series(vals_actual, index=pd.to_datetime(fechas_actual))
+        chart_df['Ritmo actual'] = chart_df.index.map(actual_idx)
+
+        # Ritmo ideal (desde último dato real hasta FECHA_C1)
+        ideal_idx = pd.Series(vals_ideal, index=pd.to_datetime(fechas_ideal))
+        chart_df['Ritmo ideal (meta)'] = chart_df.index.map(ideal_idx)
+
+        # Punto de unión en última fecha real
+        for col in ['Ritmo actual', 'Ritmo ideal (meta)']:
+            chart_df.loc[pd.Timestamp(ultima_fecha), col] = ultimo_val
+
+        st.line_chart(chart_df[['Avance Acumulado','Ritmo actual','Ritmo ideal (meta)','Meta Total']])
+
+        # ── Caption con métricas clave ────────────────────────────────────────
+        col_c1, col_c2, col_c3 = st.columns(3)
+        col_c1.metric("Tasa actual", f"{tasa_reciente:.0f} / día",
+                      help="Promedio de los últimos 7 días con datos")
+        col_c2.metric("Tasa ideal para meta",  f"{tasa_ideal:.0f} / día",
+                      help=f"Necesario para completar {META_TAMIZAJE:,} antes del {FECHA_C1.strftime('%d/%m')}")
+        col_c3.metric("Meta alcanzada con ritmo actual",
+                      fecha_meta_actual.strftime('%d/%m/%Y') if fecha_meta_actual else '—',
+                      delta=f"{'✅ Antes del límite' if fecha_meta_actual and fecha_meta_actual <= FECHA_C1 else '⚠️ Después del límite C1'}" if fecha_meta_actual else None,
+                      delta_color="normal" if fecha_meta_actual and fecha_meta_actual <= FECHA_C1 else "inverse")
 
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
