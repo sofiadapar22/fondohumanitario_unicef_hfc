@@ -327,7 +327,7 @@ def check_duracion(df):
     for cond, fn, sev in [
         (dur < 5,             lambda x: f'🔴 Muy corta ({x:.1f} min)',            'Alta'),
         ((dur>90)&(dur<1000), lambda x: f'🟡 Larga ({x:.1f} min > 90)',           'Media'),
-        (dur >= 1000,         lambda x: f'🔴 Formulario no cerrado ({x/60:.0f}h)', 'Alta'),
+        (dur >= 1000,         lambda x: f'🟡 Subido con retraso ({x/60:.0f}h — sin internet en campo)', 'Media'),
     ]:
         sub = df[cond][['_id','nombre','fecha_dia','encuestador','Municipio','duracion_min']].copy()
         if not sub.empty:
@@ -835,26 +835,70 @@ with tab_avance:
     else:
         cons_m = cons_f = total_cons = 0
 
+    # ── Tabla global ──
     tabla_desag = pd.DataFrame([
         {
-            'Actividad':            'Personas tamizadas',
-            'Niños (<5)':           n_ninos_m,
-            'Niñas (<5)':           n_ninos_f,
-            'Mujeres (≥18)':        n_adult_f,
-            'Hombres (≥18)':        n_adult_m,
-            'Total':                n_ninos_m + n_ninos_f + n_adult_f + n_adult_m,
+            'Actividad':   'Personas tamizadas',
+            'Niños (<5)':  n_ninos_m, 'Niñas (<5)': n_ninos_f,
+            'Mujeres (≥18)': n_adult_f, 'Hombres (≥18)': n_adult_m,
+            'Total': n_ninos_m + n_ninos_f + n_adult_f + n_adult_m,
         },
         {
-            'Actividad':            'Personas que recibieron consejería',
-            'Niños (<5)':           '—',
-            'Niñas (<5)':           '—',
-            'Mujeres (≥18)':        cons_f,
-            'Hombres (≥18)':        cons_m,
-            'Total':                total_cons,
+            'Actividad':   'Personas que recibieron consejería',
+            'Niños (<5)':  '—', 'Niñas (<5)': '—',
+            'Mujeres (≥18)': cons_f, 'Hombres (≥18)': cons_m,
+            'Total': total_cons,
         },
     ])
     st.dataframe(tabla_desag, use_container_width=True, hide_index=True)
     st.caption("Niños/Niñas = menores de 5 años del repeat group. Mujeres/Hombres = personas entrevistadas, deduplicadas por nombre.")
+
+    # ── Tabla por distrito ──
+    st.markdown("**📋 Desagregación por zona**")
+    filas_zona = []
+    zonas_lista = sorted(set(
+        list(ninos['Municipio'].dropna().unique() if not ninos.empty and 'Municipio' in ninos.columns else []) +
+        list(df['Municipio'].dropna().unique() if 'Municipio' in df.columns else [])
+    ))
+    for zona in zonas_lista:
+        # Niños/Niñas de esa zona
+        n_zona = ninos[ninos['Municipio'] == zona] if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame()
+        nm, nf = _sexo_es(n_zona['Sexo'], VAL_M, VAL_F) if not n_zona.empty and 'Sexo' in n_zona.columns else (0, 0)
+
+        # Adultas (maternas) de esa zona, deduplicadas
+        df_zona = df[(df['Municipio'] == zona)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'Municipio' in df.columns else pd.DataFrame()
+        am, af = _sexo_es(df_zona['sexo'], VAL_M, VAL_F) if not df_zona.empty and 'sexo' in df_zona.columns else (0, 0)
+
+        # Consejería zona
+        df_cons_zona = df[(df['Municipio'] == zona) & df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'consejeria' in df.columns and 'Municipio' in df.columns else pd.DataFrame()
+        cons_zona = len(df_cons_zona)
+
+        total_zona = nm + nf + af + am
+        if total_zona > 0 or cons_zona > 0:
+            filas_zona.append({
+                'Zona': zona,
+                'Niños': nm, 'Niñas': nf,
+                'Mujeres ≥18': af, 'Hombres ≥18': am,
+                'Total tamizados': total_zona,
+                'Con consejería': cons_zona,
+            })
+
+    if filas_zona:
+        df_zona_tabla = pd.DataFrame(filas_zona)
+        # Fila total
+        total_row = {
+            'Zona': '📊 TOTAL',
+            'Niños': df_zona_tabla['Niños'].sum(),
+            'Niñas': df_zona_tabla['Niñas'].sum(),
+            'Mujeres ≥18': df_zona_tabla['Mujeres ≥18'].sum(),
+            'Hombres ≥18': df_zona_tabla['Hombres ≥18'].sum(),
+            'Total tamizados': df_zona_tabla['Total tamizados'].sum(),
+            'Con consejería': df_zona_tabla['Con consejería'].sum(),
+        }
+        df_zona_tabla = pd.concat([df_zona_tabla, pd.DataFrame([total_row])], ignore_index=True)
+        st.dataframe(df_zona_tabla, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin datos por zona disponibles.")
 
     st.markdown("---")
 
@@ -865,25 +909,62 @@ with tab_avance:
         diario['fecha_dia'] = diario['fecha_dia'].astype(str)
         st.bar_chart(diario.set_index('fecha_dia')['Niños por día'])
 
-    st.markdown("**📈 Progreso acumulado de niños tamizados**")
+    st.markdown("**📈 Progreso acumulado y proyección de avance**")
     if not ninos.empty and 'fecha_dia' in ninos.columns:
+        import datetime as _dt
+
         cum = ninos.groupby('fecha_dia').size().reset_index(name='n').sort_values('fecha_dia')
-        cum['Niños acumulados'] = cum['n'].cumsum()
-        cum['fecha_dia'] = cum['fecha_dia'].astype(str)
+        cum['Avance Acumulado'] = cum['n'].cumsum()
+        cum['fecha_dia'] = pd.to_datetime(cum['fecha_dia'])
 
-        ultimo = int(cum['Niños acumulados'].iloc[-1])
-        pct_cum = round(ultimo / META_TAMIZAJE * 100, 1)
+        ultimo_val  = int(cum['Avance Acumulado'].iloc[-1])
+        ultima_fecha = cum['fecha_dia'].iloc[-1].date()
+        pct_cum = round(ultimo_val / META_TAMIZAJE * 100, 1)
 
-        # Barra de progreso con contexto claro
         col_p1, col_p2, col_p3 = st.columns(3)
-        col_p1.metric("Niños acumulados", f"{ultimo:,}")
-        col_p2.metric("Meta", f"{META_TAMIZAJE:,}")
+        col_p1.metric("Total acumulado", f"{ultimo_val:,}")
+        col_p2.metric("Meta C1", f"{META_TAMIZAJE:,}")
         col_p3.metric("% completado", f"{pct_cum}%")
         st.progress(min(pct_cum / 100, 1.0))
 
-        # Línea de acumulado (sin meta — la escala sería engañosa)
-        st.line_chart(cum.set_index('fecha_dia')['Niños acumulados'])
-        st.caption(f"Faltan **{META_TAMIZAJE - ultimo:,}** niños para alcanzar la meta de {META_TAMIZAJE:,}.")
+        # ── Construir dataframe para el gráfico ──────────────────────────────
+        # Serie histórica
+        hist = cum[['fecha_dia','Avance Acumulado']].copy()
+        hist['Meta Total']         = META_TAMIZAJE
+        hist['Proyección de C1']   = None
+
+        # Proyección desde hoy hasta FECHA_C1
+        # Tasa = promedio diario de campo de los últimos 7 días con datos
+        dias_recientes = cum.tail(min(7, len(cum)))
+        tasa_reciente  = dias_recientes['n'].mean()  # tamizajes/día de campo
+
+        # Días de campo restantes hasta FECHA_C1 (excluyendo domingos como proxy)
+        hoy = date.today()
+        dias_hasta_c1 = (FECHA_C1 - hoy).days
+        # Generar fechas de proyección
+        fechas_proy = [hoy + timedelta(days=i) for i in range(1, dias_hasta_c1 + 1)]
+        vals_proy   = [min(ultimo_val + tasa_reciente * (i), META_TAMIZAJE) for i, _ in enumerate(fechas_proy, 1)]
+
+        proy = pd.DataFrame({
+            'fecha_dia':           pd.to_datetime(fechas_proy),
+            'Avance Acumulado':    None,
+            'Meta Total':          META_TAMIZAJE,
+            'Proyección de C1':    vals_proy,
+        })
+
+        # Combinar
+        chart_df = pd.concat([hist, proy], ignore_index=True)
+        chart_df = chart_df.set_index('fecha_dia').sort_index()
+
+        # Agregar punto de unión (último dato real también en proyección)
+        chart_df.loc[pd.Timestamp(ultima_fecha), 'Proyección de C1'] = ultimo_val
+
+        st.line_chart(chart_df[['Avance Acumulado','Proyección de C1','Meta Total']])
+        st.caption(
+            f"Tasa reciente: **{tasa_reciente:.0f} tamizajes/día de campo** · "
+            f"Proyección al {FECHA_C1.strftime('%d/%m')}: **{min(int(ultimo_val + tasa_reciente * dias_hasta_c1), META_TAMIZAJE):,}** · "
+            f"Faltan **{max(META_TAMIZAJE - ultimo_val, 0):,}** tamizajes"
+        )
 
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
@@ -1185,7 +1266,7 @@ with tab_dur:
     c1.metric("Mediana", f"{dur_v.median():.1f} min")
     c2.metric("< 5 min", int((dur_v<5).sum()))
     c3.metric("> 90 min", int((dur_v>90).sum()))
-    c4.metric("No cerrados (>1000 min)", int((dur>=1000).sum()))
+    c4.metric("Subidos con retraso (>1000 min)", int((dur>=1000).sum()), help="Sin internet en campo — la duración no refleja el tiempo real de entrevista")
     if len(dur_v) > 0:
         hist, edges = np.histogram(dur_v.clip(upper=120), bins=range(0,125,5))
         # Usar etiquetas con cero a la izquierda para que ordenen correctamente como texto
