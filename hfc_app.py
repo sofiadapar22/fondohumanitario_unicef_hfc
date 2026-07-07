@@ -816,44 +816,44 @@ with tab_avance:
     else:
         n_ninos_m = n_ninos_f = 0
 
-    # Adultos — desde hoja principal, deduplicados por nombre
-    df_ad_u = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
-    if 'sexo' in df_ad_u.columns:
-        n_adult_m, n_adult_f = _sexo_es(df_ad_u['sexo'], VAL_M, VAL_F)
-    else:
-        n_adult_m = n_adult_f = 0
+    # Mujeres tamizadas = solo las que tienen peso, talla o IMC (embarazadas/lactantes con medición)
+    # Hombres = siempre 0 (no son tamizados, solo acompañantes)
+    df_mujeres_tam = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+    df_mujeres_tam = df_mujeres_tam[
+        df_mujeres_tam[['peso','talla','imc']].notna().any(axis=1)
+    ] if all(c in df_mujeres_tam.columns for c in ['peso','talla','imc']) else df_mujeres_tam[df_mujeres_tam['perfil'].isin(PERFILES_MATERNAS)] if 'perfil' in df_mujeres_tam.columns else pd.DataFrame()
+    n_adult_f = len(df_mujeres_tam)
+    n_adult_m = 0  # hombres no son tamizados
 
     # Consejería — hoja principal (todas las filas con consejería = Sí)
     if 'consejeria' in df.columns:
         df_cons = df[df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)]
         df_cons_u = df_cons.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
-        if 'sexo' in df_cons_u.columns:
-            cons_m, cons_f = _sexo_es(df_cons_u['sexo'], VAL_M, VAL_F)
-        else:
-            cons_m = cons_f = 0
-        total_cons = len(df_cons_u)
+        cons_f = len(df_cons_u)
+        cons_m = 0
+        total_cons = cons_f
     else:
         cons_m = cons_f = total_cons = 0
 
     # ── Tabla global ──
     tabla_desag = pd.DataFrame([
         {
-            'Actividad':   'Personas tamizadas',
-            'Niños (<5)':  n_ninos_m, 'Niñas (<5)': n_ninos_f,
-            'Mujeres (≥18)': n_adult_f, 'Hombres (≥18)': n_adult_m,
-            'Total': n_ninos_m + n_ninos_f + n_adult_f + n_adult_m,
+            'Actividad':     'Personas tamizadas',
+            'Niños (<5)':    n_ninos_m, 'Niñas (<5)': n_ninos_f,
+            'Mujeres (≥18)': n_adult_f, 'Hombres (≥18)': 0,
+            'Total':         n_ninos_m + n_ninos_f + n_adult_f,
         },
         {
-            'Actividad':   'Personas que recibieron consejería',
-            'Niños (<5)':  '—', 'Niñas (<5)': '—',
-            'Mujeres (≥18)': cons_f, 'Hombres (≥18)': cons_m,
-            'Total': total_cons,
+            'Actividad':     'Personas que recibieron consejería',
+            'Niños (<5)':    '—', 'Niñas (<5)': '—',
+            'Mujeres (≥18)': cons_f, 'Hombres (≥18)': 0,
+            'Total':         total_cons,
         },
     ])
     st.dataframe(tabla_desag, use_container_width=True, hide_index=True)
-    st.caption("Niños/Niñas = menores de 5 años del repeat group. Mujeres/Hombres = personas entrevistadas, deduplicadas por nombre.")
+    st.caption("Mujeres ≥18 = embarazadas/lactantes con medición (peso, talla o IMC). Hombres = 0 (no son tamizados).")
 
-    # ── Tabla por distrito ──
+    # ── Tabla por zona ──
     st.markdown("**📋 Desagregación por zona**")
     filas_zona = []
     zonas_lista = sorted(set(
@@ -865,20 +865,24 @@ with tab_avance:
         n_zona = ninos[ninos['Municipio'] == zona] if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame()
         nm, nf = _sexo_es(n_zona['Sexo'], VAL_M, VAL_F) if not n_zona.empty and 'Sexo' in n_zona.columns else (0, 0)
 
-        # Adultas (maternas) de esa zona, deduplicadas
-        df_zona = df[(df['Municipio'] == zona)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'Municipio' in df.columns else pd.DataFrame()
-        am, af = _sexo_es(df_zona['sexo'], VAL_M, VAL_F) if not df_zona.empty and 'sexo' in df_zona.columns else (0, 0)
+        # Mujeres tamizadas de esa zona (con medición), deduplicadas por nombre
+        df_zona_f = df[(df['Municipio'] == zona)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'Municipio' in df.columns else pd.DataFrame()
+        if not df_zona_f.empty and all(c in df_zona_f.columns for c in ['peso','talla','imc']):
+            df_zona_f = df_zona_f[df_zona_f[['peso','talla','imc']].notna().any(axis=1)]
+        elif not df_zona_f.empty and 'perfil' in df_zona_f.columns:
+            df_zona_f = df_zona_f[df_zona_f['perfil'].isin(PERFILES_MATERNAS)]
+        af = len(df_zona_f)
 
         # Consejería zona
         df_cons_zona = df[(df['Municipio'] == zona) & df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'consejeria' in df.columns and 'Municipio' in df.columns else pd.DataFrame()
         cons_zona = len(df_cons_zona)
 
-        total_zona = nm + nf + af + am
+        total_zona = nm + nf + af
         if total_zona > 0 or cons_zona > 0:
             filas_zona.append({
                 'Zona': zona,
                 'Niños': nm, 'Niñas': nf,
-                'Mujeres ≥18': af, 'Hombres ≥18': am,
+                'Mujeres ≥18': af, 'Hombres ≥18': 0,
                 'Total tamizados': total_zona,
                 'Con consejería': cons_zona,
             })
