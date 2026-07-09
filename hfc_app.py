@@ -904,107 +904,78 @@ with tab_avance:
     else:
         st.info("Sin datos por zona disponibles.")
 
+    # ── Tabla por cantón ──
+    st.markdown("**📋 Desagregación por cantón**")
+    canton_col = 'canton_nombre'
+    filas_canton = []
+    if canton_col in ninos.columns or canton_col in df.columns:
+        cantones_lista = sorted(set(
+            list(ninos[canton_col].dropna().unique() if canton_col in ninos.columns else []) +
+            list(df[canton_col].dropna().unique() if canton_col in df.columns else [])
+        ))
+        for canton in cantones_lista:
+            # Niños de ese cantón
+            n_cant = ninos[ninos[canton_col] == canton] if canton_col in ninos.columns and not ninos.empty else pd.DataFrame()
+            nm_c, nf_c = _sexo_es(n_cant['Sexo'], VAL_M, VAL_F) if not n_cant.empty and 'Sexo' in n_cant.columns else (0, 0)
+
+            # Mujeres tamizadas de ese cantón
+            df_cant = df[(df[canton_col] == canton)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if canton_col in df.columns else pd.DataFrame()
+            if not df_cant.empty and all(c in df_cant.columns for c in ['peso','talla','imc']):
+                df_cant = df_cant[df_cant[['peso','talla','imc']].notna().any(axis=1)]
+            elif not df_cant.empty and 'perfil' in df_cant.columns:
+                df_cant = df_cant[df_cant['perfil'].isin(PERFILES_MATERNAS)]
+            af_c = len(df_cant)
+
+            total_c = nm_c + nf_c + af_c
+            if total_c > 0:
+                zona_c = ninos.loc[ninos[canton_col] == canton, 'Municipio'].mode()[0] if canton_col in ninos.columns and not ninos.empty and 'Municipio' in ninos.columns and (ninos[canton_col] == canton).any() else ''
+                filas_canton.append({
+                    'Zona': zona_c,
+                    'Cantón': canton,
+                    'Niños': nm_c, 'Niñas': nf_c,
+                    'Mujeres ≥18': af_c, 'Hombres ≥18': 0,
+                    'Total': total_c,
+                })
+        if filas_canton:
+            df_canton_tabla = pd.DataFrame(filas_canton).sort_values(['Zona','Cantón'])
+            total_row_c = {
+                'Zona': '', 'Cantón': '📊 TOTAL',
+                'Niños': df_canton_tabla['Niños'].sum(),
+                'Niñas': df_canton_tabla['Niñas'].sum(),
+                'Mujeres ≥18': df_canton_tabla['Mujeres ≥18'].sum(),
+                'Hombres ≥18': 0,
+                'Total': df_canton_tabla['Total'].sum(),
+            }
+            df_canton_tabla = pd.concat([df_canton_tabla, pd.DataFrame([total_row_c])], ignore_index=True)
+            st.dataframe(df_canton_tabla, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos por cantón disponibles.")
+    else:
+        st.info("No se encontró columna de cantón — verificar catálogos geográficos.")
+
     st.markdown("---")
 
     # ── Gráfica avance diario ──
-    st.markdown("**📅 Avance diario de niños tamizados**")
+    st.markdown("**📅 Avance diario de tamizados (niños + maternas)**")
     if not ninos.empty and 'fecha_dia' in ninos.columns:
-        diario = ninos.groupby('fecha_dia').size().reset_index(name='Niños por día').sort_values('fecha_dia')
-        diario['fecha_dia'] = diario['fecha_dia'].astype(str)
-        st.bar_chart(diario.set_index('fecha_dia')['Niños por día'])
-
-    st.markdown("**📈 Progreso acumulado y proyección de avance**")
-    if not ninos.empty and 'fecha_dia' in ninos.columns:
-        import datetime as _dt
-
-        cum = ninos.groupby('fecha_dia').size().reset_index(name='n').sort_values('fecha_dia')
-        cum['Avance Acumulado'] = cum['n'].cumsum()
-        cum['fecha_dia'] = pd.to_datetime(cum['fecha_dia'])
-
-        ultimo_val  = int(cum['Avance Acumulado'].iloc[-1])
-        ultima_fecha = cum['fecha_dia'].iloc[-1].date()
-        pct_cum = round(ultimo_val / META_TAMIZAJE * 100, 1)
-
-        col_p1, col_p2, col_p3 = st.columns(3)
-        col_p1.metric("Total acumulado", f"{ultimo_val:,}")
-        col_p2.metric("Meta C1", f"{META_TAMIZAJE:,}")
-        col_p3.metric("% completado", f"{pct_cum}%")
-        st.progress(min(pct_cum / 100, 1.0))
-
-        # ── Tasas ────────────────────────────────────────────────────────────
-        hoy           = date.today()
-        dias_hasta_c1 = max((FECHA_C1 - hoy).days, 1)
-
-        # Tasa actual = promedio de los últimos 7 días con datos
-        dias_recientes = cum.tail(min(7, len(cum)))
-        tasa_reciente  = dias_recientes['n'].mean()
-
-        # Tasa ideal = cuánto hay que hacer por día calendario para llegar a meta en FECHA_C1
-        restante       = max(META_TAMIZAJE - ultimo_val, 0)
-        tasa_ideal     = restante / dias_hasta_c1
-
-        # Fecha en que se alcanza la meta con el ritmo actual
-        if tasa_reciente > 0:
-            dias_para_meta = restante / tasa_reciente
-            fecha_meta_actual = hoy + timedelta(days=int(dias_para_meta))
+        diario_n = ninos.groupby('fecha_dia').size().reset_index(name='Niños')
+        if 'fecha_dia' in df.columns:
+            if all(c in df.columns for c in ['peso','talla','imc']):
+                _dm = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+                _dm = _dm[_dm[['peso','talla','imc']].notna().any(axis=1)]
+            elif 'perfil' in df.columns:
+                _dm = df[df['perfil'].isin(PERFILES_MATERNAS)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+            else:
+                _dm = pd.DataFrame()
+            diario_m = _dm.groupby('fecha_dia').size().reset_index(name='Maternas') if not _dm.empty else pd.DataFrame(columns=['fecha_dia','Maternas'])
         else:
-            fecha_meta_actual = None
+            diario_m = pd.DataFrame(columns=['fecha_dia','Maternas'])
+        diario = diario_n.merge(diario_m, on='fecha_dia', how='outer').fillna(0)
+        diario['Total'] = diario['Niños'] + diario['Maternas']
+        diario['fecha_dia'] = diario['fecha_dia'].astype(str)
+        st.bar_chart(diario.set_index('fecha_dia')[['Niños','Maternas']])
 
-        # ── Serie histórica ───────────────────────────────────────────────────
-        hist = cum[['fecha_dia','Avance Acumulado']].copy()
-        hist['Meta Total']            = META_TAMIZAJE
-        hist['Ritmo actual']          = None
-        hist['Ritmo ideal (meta)']    = None
-
-        # ── Proyección con ritmo actual — hasta alcanzar la meta o 120 días ──
-        dias_proy_actual = int(dias_para_meta) + 5 if tasa_reciente > 0 else dias_hasta_c1
-        fechas_actual = [hoy + timedelta(days=i) for i in range(1, dias_proy_actual + 1)]
-        vals_actual   = [min(ultimo_val + tasa_reciente * i, META_TAMIZAJE) for i in range(1, dias_proy_actual + 1)]
-
-        # ── Proyección ideal — desde hoy hasta FECHA_C1 ──────────────────────
-        fechas_ideal = [hoy + timedelta(days=i) for i in range(1, dias_hasta_c1 + 1)]
-        vals_ideal   = [min(ultimo_val + tasa_ideal * i, META_TAMIZAJE) for i in range(1, dias_hasta_c1 + 1)]
-
-        # ── Unir todas las fechas en un solo df ──────────────────────────────
-        todas_fechas = sorted(set(
-            list(hist['fecha_dia']) +
-            [pd.Timestamp(f) for f in fechas_actual] +
-            [pd.Timestamp(f) for f in fechas_ideal]
-        ))
-        chart_df = pd.DataFrame(index=pd.to_datetime(todas_fechas))
-        chart_df.index.name = 'fecha'
-
-        # Acumulado histórico
-        hist_idx = hist.set_index('fecha_dia')['Avance Acumulado']
-        chart_df['Avance Acumulado'] = chart_df.index.map(hist_idx)
-
-        # Meta
-        chart_df['Meta Total'] = META_TAMIZAJE
-
-        # Ritmo actual (desde último dato real)
-        actual_idx = pd.Series(vals_actual, index=pd.to_datetime(fechas_actual))
-        chart_df['Ritmo actual'] = chart_df.index.map(actual_idx)
-
-        # Ritmo ideal (desde último dato real hasta FECHA_C1)
-        ideal_idx = pd.Series(vals_ideal, index=pd.to_datetime(fechas_ideal))
-        chart_df['Ritmo ideal (meta)'] = chart_df.index.map(ideal_idx)
-
-        # Punto de unión en última fecha real
-        for col in ['Ritmo actual', 'Ritmo ideal (meta)']:
-            chart_df.loc[pd.Timestamp(ultima_fecha), col] = ultimo_val
-
-        st.line_chart(chart_df[['Avance Acumulado','Ritmo actual','Ritmo ideal (meta)','Meta Total']])
-
-        # ── Caption con métricas clave ────────────────────────────────────────
-        col_c1, col_c2, col_c3 = st.columns(3)
-        col_c1.metric("Tasa actual", f"{tasa_reciente:.0f} / día",
-                      help="Promedio de los últimos 7 días con datos")
-        col_c2.metric("Tasa ideal para meta",  f"{tasa_ideal:.0f} / día",
-                      help=f"Necesario para completar {META_TAMIZAJE:,} antes del {FECHA_C1.strftime('%d/%m')}")
-        col_c3.metric("Meta alcanzada con ritmo actual",
-                      fecha_meta_actual.strftime('%d/%m/%Y') if fecha_meta_actual else '—',
-                      delta=f"{'✅ Antes del límite' if fecha_meta_actual and fecha_meta_actual <= FECHA_C1 else '⚠️ Después del límite C1'}" if fecha_meta_actual else None,
-                      delta_color="normal" if fecha_meta_actual and fecha_meta_actual <= FECHA_C1 else "inverse")
+    # (Ver proyección completa en tab "Proyección & Escenarios")
 
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
@@ -1024,6 +995,66 @@ with tab_escenarios:
     | **C2** 🏘️ | Presencial comunidad | 30 jul → 15 sep | Charla en las comunidades visitadas (no es tamizaje) |
     | **C3** 🏥 | Presencial campo | 15 sep → 21 oct | Retamizaje: segunda medición |
     """)
+
+    # ── Gráfico de progreso y proyección ────────────────────────────────────
+    st.markdown("### 📈 Progreso acumulado y proyección de avance C1")
+    if not ninos.empty and 'fecha_dia' in ninos.columns:
+        _n_dia = ninos.groupby('fecha_dia').size().reset_index(name='n')
+        if 'fecha_dia' in df.columns and all(c in df.columns for c in ['peso','talla','imc']):
+            _dm = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+            _dm = _dm[_dm[['peso','talla','imc']].notna().any(axis=1)]
+            _m_dia = _dm.groupby('fecha_dia').size().reset_index(name='m')
+        elif 'fecha_dia' in df.columns and 'perfil' in df.columns:
+            _dm = df[df['perfil'].isin(PERFILES_MATERNAS)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+            _m_dia = _dm.groupby('fecha_dia').size().reset_index(name='m')
+        else:
+            _m_dia = pd.DataFrame(columns=['fecha_dia','m'])
+        _cum = _n_dia.merge(_m_dia, on='fecha_dia', how='outer').fillna(0)
+        _cum['n'] = _cum['n'] + _cum.get('m', 0)
+        _cum = _cum.sort_values('fecha_dia')
+        _cum['Avance Acumulado'] = _cum['n'].cumsum().astype(int)
+        _cum['fecha_dia'] = pd.to_datetime(_cum['fecha_dia'])
+
+        _ultimo      = int(_cum['Avance Acumulado'].iloc[-1])
+        _ult_fecha   = _cum['fecha_dia'].iloc[-1].date()
+        _hoy         = date.today()
+        _dias_c1     = max((FECHA_C1 - _hoy).days, 1)
+        _restante    = max(META_TAMIZAJE - _ultimo, 0)
+        _tasa_rec    = _cum.tail(min(7, len(_cum)))['n'].mean()
+        _tasa_ideal  = _restante / _dias_c1
+        _fecha_meta  = _hoy + timedelta(days=int(_restante / _tasa_rec)) if _tasa_rec > 0 else None
+
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Tasa actual (últ. 7 días)", f"{_tasa_rec:.0f} / día")
+        col_r2.metric("Tasa ideal para meta C1",   f"{_tasa_ideal:.0f} / día",
+                      help=f"Necesario antes del {FECHA_C1.strftime('%d/%m')}")
+        col_r3.metric("Meta con ritmo actual",
+                      _fecha_meta.strftime('%d/%m/%Y') if _fecha_meta else '—',
+                      delta="✅ Antes del límite" if _fecha_meta and _fecha_meta <= FECHA_C1 else "⚠️ Después del límite C1",
+                      delta_color="normal" if _fecha_meta and _fecha_meta <= FECHA_C1 else "inverse")
+
+        # Construir series
+        _hist = _cum[['fecha_dia','Avance Acumulado']].set_index('fecha_dia')
+
+        _dias_proy = int(_restante / _tasa_rec) + 5 if _tasa_rec > 0 else _dias_c1
+        _f_actual  = [_hoy + timedelta(days=i) for i in range(1, _dias_proy + 1)]
+        _v_actual  = [min(_ultimo + _tasa_rec * i,   META_TAMIZAJE) for i in range(1, _dias_proy + 1)]
+        _f_ideal   = [_hoy + timedelta(days=i) for i in range(1, _dias_c1 + 1)]
+        _v_ideal   = [min(_ultimo + _tasa_ideal * i, META_TAMIZAJE) for i in range(1, _dias_c1 + 1)]
+
+        _all_dates = sorted(set(list(_cum['fecha_dia']) + [pd.Timestamp(f) for f in _f_actual] + [pd.Timestamp(f) for f in _f_ideal]))
+        _chart = pd.DataFrame(index=pd.to_datetime(_all_dates)); _chart.index.name = 'fecha'
+        _chart['Avance Acumulado']  = _chart.index.map(_hist['Avance Acumulado'])
+        _chart['Meta Total']        = META_TAMIZAJE
+        _chart['Ritmo actual']      = _chart.index.map(pd.Series(_v_actual, index=pd.to_datetime(_f_actual)))
+        _chart['Ritmo ideal (C1)']  = _chart.index.map(pd.Series(_v_ideal,  index=pd.to_datetime(_f_ideal)))
+        for _c in ['Ritmo actual','Ritmo ideal (C1)']:
+            _chart.loc[pd.Timestamp(_ult_fecha), _c] = _ultimo
+
+        st.line_chart(_chart[['Avance Acumulado','Ritmo actual','Ritmo ideal (C1)','Meta Total']])
+        st.caption(f"Faltan **{_restante:,}** tamizajes para completar C1 antes del {FECHA_C1.strftime('%d/%m/%Y')}.")
+
+    st.markdown("---")
 
     # Equipo actual
     N_EQUIPOS_ACTUAL  = 6   # parejas actuales
