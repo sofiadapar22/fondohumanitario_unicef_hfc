@@ -2197,8 +2197,8 @@ with tab_unicef:
         st.markdown("---")
         st.markdown("### ⬇️ Descargar en formato Herramienta de Reportería UNICEF")
 
-        _MATRIZ_PATH = _resolve('4. Matriz de Indicadores - FUSAL.xlsx')
-        _matriz_existe = os.path.exists(_MATRIZ_PATH)
+        _MATRIZ_PATH = str(_resolve('4. Matriz de Indicadores - FUSAL.xlsx'))
+        _matriz_existe = os.path.isfile(_MATRIZ_PATH)
 
         if _matriz_existe:
             # Llenar la matriz original
