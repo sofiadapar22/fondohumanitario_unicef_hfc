@@ -128,7 +128,15 @@ def cargar_raw(archivo, mod_time=None):
     main  = pd.read_excel(xl, sheet_name=0)
     ninos = pd.read_excel(xl, sheet_name='group_sr9jz33')       if 'group_sr9jz33'       in xl.sheet_names else pd.DataFrame()
     sec3  = pd.read_excel(xl, sheet_name='sec3_salud_nutricion') if 'sec3_salud_nutricion' in xl.sheet_names else pd.DataFrame()
-    return main, ninos, sec3
+    adic  = pd.read_excel(xl, sheet_name='ninos_adicionales')    if 'ninos_adicionales'    in xl.sheet_names else pd.DataFrame()
+    # Normalizar columnas de ninos_adicionales para que sean compatibles con las otras hojas
+    if not adic.empty:
+        adic = adic.rename(columns={
+            'Nombre del niño/a':             '¿Cuál es el nombre del niño/a?',
+            'Fecha de nacimiento':           'Fecha de nacimiento del niño a evaluar',
+            '¿Cuál es el estado nutricional?': '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+        })
+    return main, ninos, sec3, adic
 
 
 def unificar(df, dist_map, cant_map, us_map):
@@ -201,13 +209,16 @@ def aplicar_correcciones(df, corr):
     return df, n
 
 
-def construir_ninos(df_ninos, df_sec3, df_main):
+def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
     ref_cols = ['_id', 'fecha_dia', 'semana', 'mes', 'encuestador', 'Municipio',
                 'distrito_nombre', 'canton_nombre', 'nombre', 'telefono', 'unidad_nombre']
     ref = df_main[[c for c in ref_cols if c in df_main.columns]].copy()
 
     frames = []
-    for sheet, id_col in [(df_ninos, '_submission__id'), (df_sec3, '_submission__id')]:
+    sheets_to_process = [(df_ninos, '_submission__id'), (df_sec3, '_submission__id')]
+    if df_adic is not None and not df_adic.empty:
+        sheets_to_process.append((df_adic, '_submission__id'))
+    for sheet, id_col in sheets_to_process:
         if sheet.empty:
             continue
         s = sheet.copy()
@@ -603,10 +614,10 @@ with st.sidebar:
         else:
             mod_time = None   # archivo subido en sesión: Streamlit lo hashea por contenido
 
-        df_raw, df_ninos_raw, df_sec3_raw = cargar_raw(archivo, mod_time)
+        df_raw, df_ninos_raw, df_sec3_raw, df_adic_raw = cargar_raw(archivo, mod_time)
         df = unificar(df_raw.copy(), dist_map, cant_map, us_map)
         df, n_corr = aplicar_correcciones(df, correcciones)
-        ninos = construir_ninos(df_ninos_raw, df_sec3_raw, df)
+        ninos = construir_ninos(df_ninos_raw, df_sec3_raw, df, df_adic_raw)
 
         st.markdown("**Filtros**")
         municipios = ['Todos'] + sorted(df['Municipio'].dropna().astype(str).unique().tolist())
@@ -1732,8 +1743,8 @@ with tab_export:
 
     # ─── 2. Niños: todas las variables unificadas + correcciones ───────────────
     raw_ninos_all = pd.concat(
-        [s for s in [df_ninos_raw, df_sec3_raw] if not s.empty], ignore_index=True
-    ) if (not df_ninos_raw.empty or not df_sec3_raw.empty) else pd.DataFrame()
+        [s for s in [df_ninos_raw, df_sec3_raw, df_adic_raw] if not s.empty], ignore_index=True
+    ) if (not df_ninos_raw.empty or not df_sec3_raw.empty or not df_adic_raw.empty) else pd.DataFrame()
 
     ninos_all = pd.DataFrame()
     if not raw_ninos_all.empty:
