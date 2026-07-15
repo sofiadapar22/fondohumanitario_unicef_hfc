@@ -23,7 +23,7 @@ META_REFERIDOS = 120
 META_DESNUT    = 120
 
 # Fechas límite por contacto
-FECHA_C1      = date(2026,  7, 31)   # C1: tamizaje en campo
+FECHA_C1      = date(2026,  7, 30)   # C1: tamizaje en campo
 FECHA_C2      = date(2026,  9, 15)   # C2: charla presencial en comunidades
 FECHA_C3      = date(2026, 10, 21)   # C3: retamizaje en campo
 FECHA_LIMITE  = date(2026, 11,  1)   # cierre general del proyecto
@@ -254,11 +254,15 @@ def construir_ninos(df_ninos, df_sec3, df_main):
 def check_duplicados(df, ninos=None):
     """
     Detecta duplicados y los clasifica:
-    - 🔴 Duplicado probable: misma madre, misma fecha, sin hijos distintos detectados
-    - 🟡 Posible distinto hijo: misma madre, misma fecha, pero los IDs tienen hijos distintos en el repeat group
+    - 🔴 Duplicado probable: misma madre, misma fecha, mismo perfil, sin hijos distintos
+    - 🟡 Distinto hijo (no eliminar): misma madre, misma fecha, pero hijos distintos en repeat group
+    - ℹ️ Perfiles distintos: misma madre, misma fecha, pero perfiles diferentes → se cuenta por separado, solo aviso
     """
     mask = df.duplicated(subset=['nombre', 'fecha_ent'], keep=False) & df['nombre'].notna()
-    cands = df[mask][['_id','nombre','fecha_ent','fecha_dia','encuestador','Municipio','peso','talla','imc']].copy()
+    cols_base = ['_id','nombre','fecha_ent','fecha_dia','encuestador','Municipio','peso','talla','imc']
+    if 'perfil' in df.columns:
+        cols_base.append('perfil')
+    cands = df[mask][cols_base].copy()
 
     if cands.empty:
         return pd.DataFrame()
@@ -279,27 +283,43 @@ def check_duplicados(df, ninos=None):
         ids_grupo = grp['_id'].tolist()
         hijos_grupo = [hijos_por_id.get(i, set()) for i in ids_grupo]
 
-        # Hijos de cada submission
+        # ── Perfiles distintos: no es duplicado, solo aviso ──
+        perfiles_grupo = grp['perfil'].dropna().unique().tolist() if 'perfil' in grp.columns else []
+        if len(set(perfiles_grupo)) > 1:
+            tipo    = 'ℹ️ Perfiles distintos (no eliminar)'
+            sev     = 'Baja'
+            detalle = f"Perfiles: {', '.join(sorted(set(str(p) for p in perfiles_grupo)))}"
+            # Hijos como info adicional
+            todos_hijos = [h for h in hijos_grupo if h]
+            if todos_hijos:
+                union_hijos = set().union(*todos_hijos)
+                detalle += f" · Hijos: {', '.join(sorted(union_hijos))}"
+            for _, row in grp.iterrows():
+                resultados.append({
+                    '_id': row['_id'], 'nombre': row['nombre'],
+                    'fecha_dia': row['fecha_dia'], 'encuestador': row['encuestador'],
+                    'Municipio': row['Municipio'], 'flag': tipo, 'detalle': detalle, 'severidad': sev,
+                })
+            continue
+
+        # ── Mismo perfil: revisar hijos ──
         todos_hijos = [h for h in hijos_grupo if h]  # excluir sets vacíos
 
         if len(todos_hijos) >= 2:
-            # Verificar si hay hijos distintos entre los IDs
             union_hijos = set().union(*todos_hijos)
             intersecc   = todos_hijos[0].intersection(*todos_hijos[1:]) if len(todos_hijos) > 1 else todos_hijos[0]
             hijos_distintos = union_hijos - intersecc
 
             if hijos_distintos:
-                # Tienen hijos distintos → no eliminar
+                # Hijos distintos → no eliminar
                 tipo = '🟡 Distinto hijo (no eliminar)'
                 sev  = 'Media'
                 detalle = f"Hijos: {', '.join(sorted(union_hijos))}"
             else:
-                # Mismos hijos o sin hijos → duplicado probable
                 tipo = '🔴 Duplicado probable'
                 sev  = 'Alta'
                 detalle = f"Hijos: {', '.join(sorted(union_hijos)) or 'ninguno registrado'}"
         else:
-            # Sin hijos en ninguno → duplicado probable
             tipo = '🔴 Duplicado probable (sin niños en repeat group)'
             sev  = 'Alta'
             detalle = 'Sin niños registrados'
@@ -326,6 +346,51 @@ def check_duplicados(df, ninos=None):
             })
 
     return pd.DataFrame(resultados) if resultados else pd.DataFrame()
+
+def check_desnutricion(ninos):
+    """
+    Detecta niños con diagnóstico de desnutrición o emaciación en cualquier indicador.
+    Equivalencia: emaciado / emaciado severo = desnutrición / desnutrición severa (término actualizado en Kobo).
+    """
+    if ninos.empty:
+        return pd.DataFrame()
+
+    # Términos que activan el flag (ambas versiones del formulario)
+    TERMINOS_ALERTA = [
+        'desnutrici', 'desnutricion', 'emaciado', 'emaciacion',
+        'aguda severa', 'aguda moderada', 'riesgo de desnutri'
+    ]
+    # Columnas de diagnóstico nutricional en niños
+    diag_cols = [c for c in ninos.columns if any(k in c.lower() for k in
+                 ['diagnóstico', 'diagnostico', 'diagnóst', 'diagnos', 'perímetro', 'perimetro'])]
+
+    rows = []
+    for _, row in ninos.iterrows():
+        for col in diag_cols:
+            val = str(row.get(col, '') or '').lower().strip()
+            if not val or val in ('nan', ''):
+                continue
+            if any(t in val for t in TERMINOS_ALERTA):
+                # Determinar severidad
+                if 'riesgo' in val:
+                    sev   = 'Media'
+                    icono = '🟡'
+                else:
+                    sev   = 'Alta'
+                    icono = '🔴'
+                nombre_nino = row.get('¿Cuál es el nombre del niño/a?', 'Sin nombre')
+                rows.append({
+                    '_id':         row.get('_submission_id', ''),
+                    'nombre':      f"{nombre_nino} (niño/a)",
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                    'flag':        f"{icono} Desnutrición detectada: {val.title()} ({col.split('?')[-1].strip() if '?' in col else col[:40]})",
+                    'severidad':   sev,
+                })
+                break  # un flag por niño es suficiente
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 def check_duracion(df):
     rows = []
@@ -611,7 +676,8 @@ f_dur  = check_duracion(df)
 f_out  = check_outliers(df)
 f_nul  = check_nulos(df)
 f_geo  = check_geo(df)
-todos  = pd.concat([f for f in [f_dup,f_dur,f_out,f_nul,f_geo] if not f.empty], ignore_index=True)
+f_desn = check_desnutricion(ninos)
+todos  = pd.concat([f for f in [f_dup,f_dur,f_out,f_nul,f_geo,f_desn] if not f.empty], ignore_index=True)
 
 n_alta  = int((todos['severidad']=='Alta').sum())  if not todos.empty else 0
 n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
@@ -619,9 +685,10 @@ n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
 # KPIs de avance
 total_ninos   = len(ninos)
 if 'perfil' in df.columns:
-    # Deduplicar por nombre antes de contar maternas:
-    # si una embarazada/lactante tiene 2 hijos y hay 2 submissions, solo se cuenta una vez.
-    df_madres_unicas = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+    # Deduplicar por (nombre, perfil): si una mujer aparece con perfiles distintos
+    # (ej: embarazada en un registro, lactante en otro) se cuenta para cada perfil.
+    # Si aparece dos veces con el mismo perfil → solo se cuenta una vez.
+    df_madres_unicas = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre', 'perfil'])
     n_embarazadas = int(df_madres_unicas['perfil'].isin(PERFILES_EMBARAZADA).sum())
     n_lactantes   = int(df_madres_unicas['perfil'].isin(PERFILES_LACTANTE).sum())
 else:
@@ -775,7 +842,9 @@ with tab_avance:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("**Indicadores del proyecto**")
-        n_ref = int(df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if 'referencia' in df.columns else 0
+        n_ref_maternas = int(df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if 'referencia' in df.columns else 0
+        n_ref_ninos    = int(ninos['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if (not ninos.empty and '¿Se brindó referencia?' in ninos.columns) else 0
+        n_ref = n_ref_maternas + n_ref_ninos
         ind_df = pd.DataFrame({
             'Indicador': [
                 'Total tamizados (C1)',
@@ -805,39 +874,52 @@ with tab_avance:
 
     # ── Tabla de personas referidas ──
     st.markdown("**📋 Personas referidas**")
+
+    # Maternas referidas
+    ref_rows = []
     if 'referencia' in df.columns:
-        df_ref = df[df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
-        if df_ref.empty:
-            st.info("Aún no hay personas referidas registradas.")
-        else:
-            # Resumen por perfil
-            col_r1, col_r2, col_r3 = st.columns(3)
-            col_r1.metric("Total referidas", len(df_ref))
-            if 'perfil' in df_ref.columns:
-                n_ref_ninos   = int(df_ref['perfil'].astype(str).str.lower().str.contains('niño|niña|menor', na=False).sum())
-                n_ref_madres  = len(df_ref) - n_ref_ninos
-                col_r2.metric("Niños/as", n_ref_ninos)
-                col_r3.metric("Maternas", n_ref_madres)
+        df_ref_mat = df[df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
+        for _, row in df_ref_mat.iterrows():
+            ref_rows.append({
+                'Nombre':       row.get('nombre', ''),
+                'Tipo':         row.get('perfil', 'Materna'),
+                'Fecha':        row.get('fecha_dia', ''),
+                'Encuestadora': row.get('encuestador', ''),
+                'Municipio':    row.get('Municipio', ''),
+                'Distrito':     row.get('distrito_nombre', ''),
+                'Cantón':       row.get('canton_nombre', ''),
+            })
 
-            # Detalle
-            cols_ref = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','canton_nombre','perfil'] if c in df_ref.columns]
-            ref_display = df_ref[cols_ref].rename(columns={
-                'nombre':          'Nombre',
-                'fecha_dia':       'Fecha',
-                'encuestador':     'Encuestadora',
-                'Municipio':       'Municipio',
-                'distrito_nombre': 'Distrito',
-                'canton_nombre':   'Cantón',
-                'perfil':          'Perfil',
-            }).sort_values('Fecha', ascending=False)
-            st.dataframe(ref_display, use_container_width=True, hide_index=True)
+    # Niños referidos
+    if not ninos.empty and '¿Se brindó referencia?' in ninos.columns:
+        df_ref_nin = ninos[ninos['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
+        nombre_col = '¿Cuál es el nombre del niño/a?' if '¿Cuál es el nombre del niño/a?' in df_ref_nin.columns else None
+        for _, row in df_ref_nin.iterrows():
+            ref_rows.append({
+                'Nombre':       row[nombre_col] if nombre_col else '',
+                'Tipo':         'Niño/a',
+                'Fecha':        row.get('fecha_dia', ''),
+                'Encuestadora': row.get('encuestador', ''),
+                'Municipio':    row.get('Municipio', ''),
+                'Distrito':     row.get('distrito_nombre', ''),
+                'Cantón':       row.get('canton_nombre', ''),
+            })
 
-            # Resumen por encuestadora
-            with st.expander("📊 Referencias por encuestadora"):
-                ref_enc = df_ref.groupby('encuestador').size().reset_index(name='Referencias').sort_values('Referencias', ascending=False)
-                st.dataframe(ref_enc, use_container_width=True, hide_index=True)
+    if not ref_rows:
+        st.info("Aún no hay personas referidas registradas.")
     else:
-        st.info("Columna de referencia no disponible en los datos.")
+        df_ref_all = pd.DataFrame(ref_rows)
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Total referidas", len(df_ref_all))
+        col_r2.metric("Niños/as", int((df_ref_all['Tipo'] == 'Niño/a').sum()))
+        col_r3.metric("Maternas", int((df_ref_all['Tipo'] != 'Niño/a').sum()))
+
+        df_ref_all['Fecha'] = pd.to_datetime(df_ref_all['Fecha'], errors='coerce')
+        st.dataframe(df_ref_all.sort_values('Fecha', ascending=False), use_container_width=True, hide_index=True)
+
+        with st.expander("📊 Referencias por encuestadora"):
+            ref_enc = df_ref_all.groupby('Encuestadora').size().reset_index(name='Referencias').sort_values('Referencias', ascending=False)
+            st.dataframe(ref_enc, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
