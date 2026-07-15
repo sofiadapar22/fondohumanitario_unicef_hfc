@@ -404,6 +404,98 @@ def check_desnutricion(ninos):
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
+def check_referencia_congruencia(df, ninos):
+    """
+    Dos tipos de incongruencia entre diagnóstico peso/talla y referencia:
+      🔴 Debería referirse  — diagnóstico crítico (emaciado/desnutrición) pero SIN referencia
+      🟡 Referencia dudosa  — SE hizo referencia pero diagnóstico peso/talla es normal
+    Se revisa tanto en niños (diag peso/talla) como en maternas (campo referencia).
+    """
+    # Términos que EXIGEN referencia
+    CRITICOS   = ['desnutrici','emaciado','emaciacion','aguda severa','aguda moderada']
+    # Términos que indican estado normal (no debería referirse por peso/talla)
+    NORMALES   = ['normal','adecuado','eutrófico','eutr','bien nutrido']
+    RIESGO     = ['riesgo']  # gris: referencia razonable, no flag
+
+    rows = []
+
+    # ── NIÑOS ────────────────────────────────────────────────────────────────
+    if not ninos.empty:
+        # Columna específica de diagnóstico peso/talla (la más relevante para referencia)
+        col_pt = next((c for c in ninos.columns if 'peso' in c.lower() and 'talla' in c.lower()
+                       and ('diagnós' in c.lower() or 'diagnos' in c.lower())), None)
+        # Fallback: cualquier columna de diagnóstico
+        if not col_pt:
+            col_pt = next((c for c in ninos.columns if 'diagnós' in c.lower() or 'diagnos' in c.lower()), None)
+
+        col_ref_n = '¿Se brindó referencia?' if '¿Se brindó referencia?' in ninos.columns else None
+
+        if col_pt and col_ref_n:
+            for _, row in ninos.iterrows():
+                diag    = str(row.get(col_pt, '') or '').lower().strip()
+                ref_val = str(row.get(col_ref_n, '') or '').lower().strip()
+                tiene_ref = 'sí' in ref_val or 'si' in ref_val
+                es_critico = any(t in diag for t in CRITICOS)
+                es_normal  = any(t in diag for t in NORMALES)
+                es_riesgo  = any(t in diag for t in RIESGO)
+                nombre_n   = row.get('¿Cuál es el nombre del niño/a?', 'Sin nombre')
+
+                base = {
+                    '_id':         row.get('_submission_id', ''),
+                    'nombre':      f"{nombre_n} (niño/a)",
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                }
+                if es_critico and not tiene_ref:
+                    rows.append({**base,
+                        'flag':      f"🔴 Sin referencia — diagnóstico crítico: {diag.title()}",
+                        'severidad': 'Alta',
+                    })
+                elif tiene_ref and es_normal and not es_riesgo and diag:
+                    rows.append({**base,
+                        'flag':      f"🟡 Referencia con diagnóstico normal: {diag.title()}",
+                        'severidad': 'Media',
+                    })
+
+    # ── MATERNAS ─────────────────────────────────────────────────────────────
+    # Para maternas: usamos IMC / estado nutricional si está disponible
+    if not df.empty:
+        col_ref_m = 'referencia' if 'referencia' in df.columns else None
+        # Columna de diagnóstico nutricional de la madre (IMC / estado)
+        col_diag_m = next((c for c in df.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()
+                           or 'imc' == c.lower()), None)
+
+        if col_ref_m and col_diag_m:
+            for _, row in df.iterrows():
+                diag    = str(row.get(col_diag_m, '') or '').lower().strip()
+                ref_val = str(row.get(col_ref_m, '') or '').lower().strip()
+                tiene_ref  = 'sí' in ref_val or 'si' in ref_val
+                es_critico = any(t in diag for t in CRITICOS)
+                es_normal  = any(t in diag for t in NORMALES)
+                es_riesgo  = any(t in diag for t in RIESGO)
+
+                base = {
+                    '_id':         row.get('_id', ''),
+                    'nombre':      row.get('nombre', 'Sin nombre'),
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                }
+                if es_critico and not tiene_ref and diag:
+                    rows.append({**base,
+                        'flag':      f"🔴 Sin referencia — diagnóstico crítico: {diag.title()}",
+                        'severidad': 'Alta',
+                    })
+                elif tiene_ref and es_normal and not es_riesgo and diag:
+                    rows.append({**base,
+                        'flag':      f"🟡 Referencia con diagnóstico normal: {diag.title()}",
+                        'severidad': 'Media',
+                    })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 def check_duracion(df):
     rows = []
     dur = df['duracion_min']
@@ -689,7 +781,8 @@ f_out  = check_outliers(df)
 f_nul  = check_nulos(df)
 f_geo  = check_geo(df)
 f_desn = check_desnutricion(ninos)
-todos  = pd.concat([f for f in [f_dup,f_dur,f_out,f_nul,f_geo,f_desn] if not f.empty], ignore_index=True)
+f_ref  = check_referencia_congruencia(df, ninos)
+todos  = pd.concat([f for f in [f_dup,f_dur,f_out,f_nul,f_geo,f_desn,f_ref] if not f.empty], ignore_index=True)
 
 n_alta  = int((todos['severidad']=='Alta').sum())  if not todos.empty else 0
 n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
@@ -719,17 +812,19 @@ tasa_actual     = total_tamizados / dias_campo if dias_campo > 0 else 0
 # ══════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════
-tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export = st.tabs([
+tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_ref_check, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export, tab_unicef = st.tabs([
     "📊 Avance General",
     "🎯 Proyección & Escenarios",
     "🥗 Indicadores Nutricionales",
     "🚦 Flags HFC",
+    "🚨 Referencias",
     "⏱️ Duración",
     "👥 Duplicados",
     "📈 Outliers",
     "👩‍💼 Por Encuestadora",
     "📍 Geo / Correcciones",
     "📥 Exportar",
+    "🇺🇳 Reporte UNICEF",
 ])
 
 
@@ -1494,6 +1589,71 @@ with tab_flags:
         st.dataframe(todos[cols].sort_values('severidad'), use_container_width=True, hide_index=True)
 
 
+# ── TAB: REFERENCIAS ───────────────────────────────────────────────────────
+with tab_ref_check:
+    st.subheader("🚨 Control de Calidad — Referencias")
+    st.caption(
+        "Revisión de congruencia entre diagnóstico nutricional (peso/talla) y referencia. "
+        "**Rojo** = debería haberse referido y no se hizo. **Amarillo** = se hizo referencia pero el diagnóstico es normal."
+    )
+
+    if f_ref.empty:
+        st.success("✅ Sin inconsistencias de referencia detectadas.")
+    else:
+        # KPIs
+        n_sin_ref   = int((f_ref['severidad'] == 'Alta').sum())
+        n_ref_dudosa= int((f_ref['severidad'] == 'Media').sum())
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total inconsistencias", len(f_ref))
+        k2.metric("🔴 Sin referencia (debería)", n_sin_ref)
+        k3.metric("🟡 Referencia dudosa (dx normal)", n_ref_dudosa)
+
+        st.markdown("---")
+
+        # ── Casos sin referencia (prioritario) ─────────────────────────────
+        f_sin_ref = f_ref[f_ref['severidad'] == 'Alta']
+        if not f_sin_ref.empty:
+            st.markdown(f"### 🔴 Sin referencia — diagnóstico crítico ({len(f_sin_ref)} casos)")
+            st.caption("Estos niños/as o personas tienen desnutrición aguda / emaciación registrada pero **no se les hizo referencia**. Requieren seguimiento inmediato.")
+            cols_show = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag'] if c in f_sin_ref.columns]
+            st.dataframe(
+                f_sin_ref[cols_show].rename(columns={'fecha_dia':'Fecha','encuestador':'Encuestadora','distrito_nombre':'Distrito'})
+                .sort_values('Fecha', ascending=False),
+                use_container_width=True, hide_index=True
+            )
+
+            # Descarga
+            buf_sr = io.BytesIO()
+            f_sin_ref[cols_show].to_excel(buf_sr, index=False); buf_sr.seek(0)
+            st.download_button("⬇️ Descargar listado sin referencia (.xlsx)", buf_sr,
+                               "sin_referencia_urgente.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            st.markdown("---")
+
+        # ── Referencias dudosas ─────────────────────────────────────────────
+        f_dud = f_ref[f_ref['severidad'] == 'Media']
+        if not f_dud.empty:
+            with st.expander(f"🟡 Referencia con diagnóstico normal ({len(f_dud)} casos) — clic para ver"):
+                cols_show2 = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag'] if c in f_dud.columns]
+                st.dataframe(
+                    f_dud[cols_show2].rename(columns={'fecha_dia':'Fecha','encuestador':'Encuestadora','distrito_nombre':'Distrito'})
+                    .sort_values('Fecha', ascending=False),
+                    use_container_width=True, hide_index=True
+                )
+
+        # ── Resumen por encuestadora ────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Por encuestadora**")
+        if 'encuestador' in f_ref.columns:
+            resumen_enc = (
+                f_ref.groupby(['encuestador','severidad'])
+                .size().unstack(fill_value=0).reset_index()
+                .rename(columns={'encuestador':'Encuestadora','Alta':'Sin referencia 🔴','Media':'Ref. dudosa 🟡'})
+            )
+            st.dataframe(resumen_enc, use_container_width=True, hide_index=True)
+
+
 # ── TAB 5: DURACIÓN ────────────────────────────
 with tab_dur:
     st.subheader("⏱️ Duración de Entrevistas")
@@ -1860,3 +2020,257 @@ with tab_export:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.success("✅ Sin flags — no hay reporte que exportar.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: REPORTE UNICEF
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_unicef:
+    st.subheader("🇺🇳 Reporte UNICEF — Herramienta de Reportería")
+    st.caption(
+        "Tabla en el formato exacto de la Herramienta de Reportería de UNICEF. "
+        "Selecciona el mes y descarga el Excel listo para enviar."
+    )
+
+    # ── Helpers de conteo ────────────────────────────────────────────────────
+    DISTRITOS_UNICEF = [
+        'Ahuachapán Centro','San Miguel Centro','San Salvador Centro',
+        'San Salvador Este','Santa Ana Centro','Usulután Este',
+    ]
+    # La matriz usa "Usulatán Este" (con acento en U) — map inverso para mostrar
+    DIST_LABEL = {d: d for d in DISTRITOS_UNICEF}
+    DIST_LABEL['Usulután Este'] = 'Usulatán Este'
+
+    AGE_GROUPS = ['0-5m','6-11m','12-23m','24-59m','5-9a','10-14a','15-17a','18-24a','25-59a','60+a']
+
+    def _unicef_edad_adulto(row, ref=date.today()):
+        e = row.get('edad_a', np.nan) if hasattr(row, 'get') else np.nan
+        dob = row.get('dob_calc', pd.NaT) if hasattr(row, 'get') else pd.NaT
+        if pd.isna(e) and pd.notna(dob):
+            try: e = (ref - dob.date()).days / 365.25
+            except: e = np.nan
+        if pd.isna(e): return '25-59a'
+        e = float(e)
+        if e < 15: return '10-14a'
+        elif e < 18: return '15-17a'
+        elif e < 25: return '18-24a'
+        elif e < 60: return '25-59a'
+        else: return '60+a'
+
+    def _unicef_edad_nino(dob, ref=date.today()):
+        if pd.isna(dob): return 'desc'
+        try:
+            m = (ref - dob.date()).days / 30.44
+        except: return 'desc'
+        if m < 6: return '0-5m'
+        elif m < 12: return '6-11m'
+        elif m < 24: return '12-23m'
+        elif m < 60: return '24-59m'
+        elif m < 120: return '5-9a'
+        elif m < 180: return '10-14a'
+        elif m < 216: return '15-17a'
+        else: return '25-59a'
+
+    def _build_breakdown(df_main_sel, df_ninos_sel):
+        """Devuelve dict {(grupo_edad, sexo): count}"""
+        import re as _re
+        bd = {}
+        # Adultos
+        if not df_main_sel.empty:
+            edad_txt = df_main_sel.get('edad_txt', pd.Series(dtype=str)) if 'edad_txt' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+            def _parse_e(s):
+                m = _re.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
+            edad_a = edad_txt.apply(_parse_e)
+            dob_col = df_main_sel.get('dob_calc', pd.Series(dtype=object)) if 'dob_calc' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
+            sexo_col = df_main_sel.get('sexo_std_u', pd.Series(dtype=str)) if 'sexo_std_u' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+            for i in df_main_sel.index:
+                g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT)})
+                s = 'M' if 'masc' in str(sexo_col.get(i,'')).lower() else 'F'
+                bd[(g,s)] = bd.get((g,s),0) + 1
+        # Niños
+        if not df_ninos_sel.empty:
+            dob_n = pd.to_datetime(df_ninos_sel.get('Fecha de nacimiento del niño a evaluar', pd.Series(dtype=object)), errors='coerce') if 'Fecha de nacimiento del niño a evaluar' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
+            sexo_n = df_ninos_sel.get('Sexo', pd.Series(dtype=str, index=df_ninos_sel.index))
+            for i in df_ninos_sel.index:
+                g = _unicef_edad_nino(dob_n.get(i, pd.NaT))
+                s = 'M' if 'masc' in str(sexo_n.get(i,'')).lower() else 'F'
+                bd[(g,s)] = bd.get((g,s),0) + 1
+        return bd
+
+    # Enriquecer df con columnas auxiliares para este tab
+    _df_u = df.copy() if not df.empty else pd.DataFrame()
+    _ninos_u = ninos.copy() if not ninos.empty else pd.DataFrame()
+
+    if not _df_u.empty:
+        import re as _re2
+        def _pe(s):
+            m = _re2.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
+        _df_u['edad_txt'] = _df_u.get('edad_entrevistado', pd.Series(dtype=str, index=_df_u.index)) if 'edad_entrevistado' in _df_u.columns else pd.Series(dtype=str, index=_df_u.index)
+        _df_u['edad_a']   = _df_u['edad_txt'].apply(_pe)
+        _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada') if 'Fecha de nacimiento de la persona entrevistada' in df_raw.columns else None
+        if _dob_raw is None:
+            _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada.1') if 'Fecha de nacimiento de la persona entrevistada.1' in df_raw.columns else None
+        if _dob_raw is not None and '_id' in df_raw.columns and '_id' in _df_u.columns:
+            _dob_map = df_raw.set_index('_id')[_dob_raw.name] if hasattr(_dob_raw, 'name') else df_raw.set_index('_id').get('Fecha de nacimiento de la persona entrevistada')
+            _df_u['dob_calc'] = pd.to_datetime(_df_u['_id'].map(_dob_map) if _dob_map is not None else pd.NaT, errors='coerce')
+        else:
+            _df_u['dob_calc'] = pd.NaT
+        _df_u['sexo_std_u'] = _df_u.get('sexo', pd.Series(dtype=str, index=_df_u.index)).astype(str).str.lower()
+
+    # ── Selector de mes ───────────────────────────────────────────────────────
+    _meses_disp = sorted(_df_u['mes'].dropna().unique().tolist()) if not _df_u.empty and 'mes' in _df_u.columns else []
+    if not _meses_disp:
+        st.warning("No hay datos cargados.")
+    else:
+        _mes_sel = st.selectbox("Mes de reporte", _meses_disp, index=len(_meses_disp)-1, key='unicef_mes')
+
+        INDICADORES = [
+            ('TAM',  '# de personas tamizadas para detectar desnutrición aguda en los municipios priorizados.'),
+            ('IYCF', '# de personas que se benefician de la orientación e información comunitaria sobre alimentación de lactantes y niñas/niños pequeños en situaciones de emergencia (IYCF-E).'),
+            ('REF',  '# de personas referidas a primer nivel de atención para el tratamiento de desnutrición aguda.'),
+            ('DESN', '# de personas con nutrición aguda identificadas'),
+        ]
+
+        # Construir tabla
+        rows_tabla = []
+        rows_export = []   # para el Excel descargable
+
+        for ind_key, ind_label in INDICADORES:
+            for dist in DISTRITOS_UNICEF:
+                _mm = _df_u[(_df_u.get('mes','') == _mes_sel) & (_df_u.get('distrito_nombre', _df_u.get('Municipio','')) == dist)] if not _df_u.empty else pd.DataFrame()
+                _mn = _ninos_u[(_ninos_u.get('mes','') == _mes_sel) & (_ninos_u.get('distrito_nombre', _ninos_u.get('Municipio','')) == dist)] if not _ninos_u.empty else pd.DataFrame()
+
+                if ind_key == 'TAM':
+                    total = len(_mm) + len(_mn)
+                    bd = _build_breakdown(_mm, _mn)
+                elif ind_key == 'IYCF':
+                    _mc = _mm[_mm['consejeria']] if not _mm.empty and 'consejeria' in _mm.columns else pd.DataFrame()
+                    total = len(_mc)
+                    bd = _build_breakdown(_mc, pd.DataFrame())
+                elif ind_key == 'REF':
+                    _mr = _mm[_mm['referencia']] if not _mm.empty and 'referencia' in _mm.columns else pd.DataFrame()
+                    _nr = _mn[_mn['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False)] if not _mn.empty and '¿Se brindó referencia?' in _mn.columns else pd.DataFrame()
+                    total = len(_mr) + len(_nr)
+                    bd = _build_breakdown(_mr, _nr)
+                elif ind_key == 'DESN':
+                    _TERMS = ['desnutrici','emaciado','aguda severa','aguda moderada','riesgo de desnutri']
+                    _dcols = [c for c in (_mn.columns if not _mn.empty else []) if 'diagnós' in c.lower() or 'períme' in c.lower()]
+                    def _has_d(row):
+                        return any(any(t in str(row.get(c,'')).lower() for t in _TERMS) for c in _dcols)
+                    _nd = _mn[_mn.apply(_has_d, axis=1)] if not _mn.empty and _dcols else pd.DataFrame()
+                    total = len(_nd)
+                    bd = _build_breakdown(pd.DataFrame(), _nd)
+                else:
+                    total, bd = 0, {}
+
+                row = {
+                    'Indicador': ind_label,
+                    'Distrito':  DIST_LABEL.get(dist, dist),
+                    'Total':     total,
+                    'Nuevos':    total,
+                }
+                for g in AGE_GROUPS:
+                    row[f'Niños {g}']  = bd.get((g,'M'), 0)
+                    row[f'Niñas {g}']  = bd.get((g,'F'), 0)
+
+                # Vista resumida para la tabla en pantalla
+                rows_tabla.append({
+                    'Indicador': ind_key,
+                    'Distrito':  DIST_LABEL.get(dist, dist),
+                    'Total':     total,
+                    **{g: bd.get((g,'M'),0) + bd.get((g,'F'),0) for g in AGE_GROUPS},
+                })
+                rows_export.append(row)
+
+        df_tabla = pd.DataFrame(rows_tabla)
+        df_export = pd.DataFrame(rows_export)
+
+        # ── Vista en pantalla: pivot por indicador ────────────────────────────
+        for ind_key, ind_label in INDICADORES:
+            st.markdown(f"**{ind_key} — {ind_label[:80]}{'…' if len(ind_label)>80 else ''}**")
+            sub = df_tabla[df_tabla['Indicador']==ind_key].drop(columns='Indicador').set_index('Distrito')
+            # Solo mostrar grupos con algún dato
+            cols_con_datos = ['Total'] + [c for c in AGE_GROUPS if sub[c].sum() > 0]
+            st.dataframe(sub[cols_con_datos], use_container_width=True)
+            st.markdown("")
+
+        # ── Descarga Excel en formato UNICEF ─────────────────────────────────
+        st.markdown("---")
+        st.markdown("### ⬇️ Descargar en formato Herramienta de Reportería UNICEF")
+
+        _MATRIZ_PATH = _resolve('4. Matriz de Indicadores - FUSAL.xlsx')
+        _matriz_existe = os.path.exists(_MATRIZ_PATH)
+
+        if _matriz_existe:
+            # Llenar la matriz original
+            import shutil as _shutil
+            from openpyxl import load_workbook as _load_wb
+
+            _buf_matriz = io.BytesIO()
+            with open(_MATRIZ_PATH, 'rb') as _f:
+                _buf_matriz.write(_f.read())
+            _buf_matriz.seek(0)
+
+            _wb = _load_wb(_buf_matriz)
+            _ws = _wb['Herramienta de Reportería']
+
+            _COL_MAP = {
+                ('0-5m','M'):8,  ('0-5m','F'):9,
+                ('6-11m','M'):10,('6-11m','F'):11,
+                ('12-23m','M'):12,('12-23m','F'):13,
+                ('24-59m','M'):14,('24-59m','F'):15,
+                ('5-9a','M'):16, ('5-9a','F'):17,
+                ('10-14a','M'):18,('10-14a','F'):19,
+                ('15-17a','M'):20,('15-17a','F'):21,
+                ('18-24a','M'):22,('18-24a','F'):23,
+                ('25-59a','M'):24,('25-59a','F'):25,
+                ('60+a','M'):26, ('60+a','F'):27,
+            }
+            _DIST_INV = {v: k for k, v in DIST_LABEL.items()}
+            _export_idx = {(r['Indicador'], r['Distrito']): r for r in rows_export}
+
+            for _row in _ws.iter_rows(min_row=9, max_row=260):
+                _ind = _row[2].value; _mes = str(_row[3].value) if _row[3].value else ''; _dist = _row[4].value
+                if not _ind or not _mes or not _dist: continue
+                if _mes != _mes_sel: continue
+                if 'afirman' in str(_ind).lower() or 'mecanismo' in str(_ind).lower(): continue
+
+                # buscar en export_idx por indicador label + distrito
+                _key = None
+                for (ik, idl) in INDICADORES:
+                    if idl == _ind or (ik == 'TAM' and 'tamizad' in _ind.lower()) \
+                       or (ik == 'IYCF' and 'orientación' in _ind.lower() and 'lactante' in _ind.lower()) \
+                       or (ik == 'REF' and 'referid' in _ind.lower()) \
+                       or (ik == 'DESN' and 'con nutrición aguda' in _ind.lower()):
+                        _key = (idl, _dist)
+                        break
+                if _key not in _export_idx: continue
+
+                _rec = _export_idx[_key]
+                _row[5].value = _rec['Total']
+                _row[6].value = _rec['Total']
+                for _ci in range(8, 32): _row[_ci-1].value = 0
+                for _g in AGE_GROUPS:
+                    _row[_COL_MAP[(_g,'M')]-1].value = int(_rec.get(f'Niños {_g}', 0))
+                    _row[_COL_MAP[(_g,'F')]-1].value = int(_rec.get(f'Niñas {_g}', 0))
+
+            _out_buf = io.BytesIO()
+            _wb.save(_out_buf)
+            _out_buf.seek(0)
+            st.download_button(
+                f"⬇️ Herramienta de Reportería UNICEF — {_mes_sel} (.xlsx)",
+                _out_buf,
+                f"Reporte_UNICEF_FUSAL_{_mes_sel}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            # Si no hay matriz, descargar tabla simple
+            _buf_simple = io.BytesIO()
+            df_export.to_excel(_buf_simple, index=False)
+            _buf_simple.seek(0)
+            st.download_button(
+                f"⬇️ Datos para reporte UNICEF — {_mes_sel} (.xlsx)",
+                _buf_simple,
+                f"Reporte_UNICEF_FUSAL_{_mes_sel}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            st.info("💡 Para generar el Excel en formato exacto de UNICEF, sube el archivo `4. Matriz de Indicadores - FUSAL.xlsx` al repositorio.")
