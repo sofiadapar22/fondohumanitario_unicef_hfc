@@ -1761,6 +1761,10 @@ with tab_export:
             ninos_all = ninos_all.rename(columns=_collision)
 
     # ─── 3. JOIN: entrevistada (left) ← niños (right) ─────────────────────────
+    # Guardar lista de columnas del niño ANTES del merge para reordenar correctamente después
+    _nino_col_names = set(ninos_all.columns) if not ninos_all.empty else set()
+    _DROP_FROM_NINO = {'_parent_index', '_submission__id', '_ent_id', '_index', '_id'}
+
     consolidado = pd.DataFrame()
     if not ent_all.empty and not ninos_all.empty:
         # Resolver _parent_index → _id de entrevistada
@@ -1784,16 +1788,25 @@ with tab_export:
     elif not ent_all.empty:
         consolidado = ent_all.copy()
 
-    # Reordenar: columnas de entrevistada primero, luego niño, luego hfc_
+    # Reordenar: columnas clave de identificación → entrevistada → niño → hfc_
+    # Usamos _nino_col_names (capturado antes del merge) para saber exactamente qué es del niño
     if not consolidado.empty:
         _hfc_cols  = [c for c in consolidado.columns if c.startswith('hfc_')]
-        _nino_cols = [c for c in consolidado.columns if c.startswith('nino_') or c in (
-            '¿Cuál es el nombre del niño/a?','Sexo','Fecha de nacimiento del niño a evaluar',
-            'edad_nino','¿Cuál es el peso en Kg del niño/a?','¿Cuál es la talla en cm del niño/a?',
-            'Medida del perímetro braquial en cm',
-        )]
-        _ent_cols  = [c for c in consolidado.columns if c not in _hfc_cols and c not in _nino_cols]
-        consolidado = consolidado[_ent_cols + _nino_cols + _hfc_cols]
+        # Columnas que vinieron de ninos_all (excluir claves de join ya droppeadas)
+        _nino_cols = [c for c in consolidado.columns
+                      if c in _nino_col_names and c not in _DROP_FROM_NINO and not c.startswith('hfc_')]
+        _ent_cols  = [c for c in consolidado.columns
+                      if c not in _nino_cols and c not in _hfc_cols]
+
+        # Columnas de niño: nombre primero, luego el resto
+        _NINO_PRIORITY = ['¿Cuál es el nombre del niño/a?', 'Sexo', 'Fecha de nacimiento del niño a evaluar',
+                          'edad_nino', '¿Cuál es el peso en Kg del niño/a?', '¿Cuál es la talla en cm del niño/a?',
+                          'Medida del perímetro braquial en cm']
+        _nino_first = [c for c in _NINO_PRIORITY if c in _nino_cols]
+        _nino_rest  = [c for c in _nino_cols if c not in _nino_first]
+        _nino_ordered = _nino_first + _nino_rest
+
+        consolidado = consolidado[_ent_cols + _nino_ordered + _hfc_cols]
 
     st.markdown("---")
 
