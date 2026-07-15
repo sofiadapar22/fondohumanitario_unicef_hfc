@@ -237,7 +237,9 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
                      '¿Cuál es el diagnóstico nutricional de peso edad?',
                      '¿Cuál es el diagnóstico nutricional del peso y la talla?',
                      'Diagnóstico nutricional según perímetro braquial',
-                     '¿Se brindó referencia?']
+                     '¿Se brindó referencia?',
+                     '¿Se le brindó consejería a niños y niñas?',
+                     '¿Se le brindó consejería a la madre embarazada, lactante o adulto/a responsable?']
         cols_keep = [c for c in cols_keep if c in s.columns]
         s = s[cols_keep].rename(columns={id_col: '_submission_id'})
         frames.append(s)
@@ -2173,25 +2175,48 @@ with tab_unicef:
                 if ind_key == 'TAM':
                     # Solo contar maternas SIN niños (las que tienen niños ya se cuentan a través de _mn)
                     _mm_sin_ninos = _mm[~_mm['_id'].isin(_ids_con_ninos)] if not _mm.empty and '_id' in _mm.columns and _ids_con_ninos else _mm
-                    total = len(_mm_sin_ninos) + len(_mn)
                     bd = _build_breakdown(_mm_sin_ninos, _mn)
+                    total = sum(bd.values())   # consistente con el desglose por edad
                 elif ind_key == 'IYCF':
-                    _mc = _mm[_mm['consejeria'].astype(str).str.contains('Sí|Si|1|True', case=False, na=False)] if not _mm.empty and 'consejeria' in _mm.columns else pd.DataFrame()
-                    total = len(_mc)
-                    bd = _build_breakdown(_mc, pd.DataFrame())
+                    # Solo consejería de niños
+                    _SI = 'Sí|Si|1|True'
+                    _col_cons_n = '¿Se le brindó consejería a niños y niñas?'
+                    _mn_cons = pd.DataFrame()
+                    if not _mn.empty and _col_cons_n in _mn.columns:
+                        _mn_cons = _mn[_mn[_col_cons_n].astype(str).str.contains(_SI, case=False, na=False)]
+                    bd = _build_breakdown(pd.DataFrame(), _mn_cons)
+                    total = sum(bd.values())
                 elif ind_key == 'REF':
-                    _mr = _mm[_mm['referencia'].astype(str).str.contains('Sí|Si|1|True', case=False, na=False)] if not _mm.empty and 'referencia' in _mm.columns else pd.DataFrame()
-                    _nr = _mn[_mn['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False)] if not _mn.empty and '¿Se brindó referencia?' in _mn.columns else pd.DataFrame()
-                    total = len(_mr) + len(_nr)
+                    # Niños: emaciado o emaciado severo en diagnóstico peso/talla
+                    _COL_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+                    _EMACIADO = ['emaciado', 'emaciado severo', 'desnutrici', 'aguda severa', 'aguda moderada']
+                    _nr = pd.DataFrame()
+                    if not _mn.empty and _COL_PT in _mn.columns:
+                        _nr = _mn[_mn[_COL_PT].astype(str).str.lower().apply(
+                            lambda v: any(t in v for t in _EMACIADO)
+                        )]
+                    # Maternas: embarazada/lactante con diagnóstico de desnutrición
+                    _mr = pd.DataFrame()
+                    if not _mm.empty:
+                        _col_diag_m = next((c for c in _mm.columns
+                                            if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
+                        _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
+                        if _col_diag_m and _col_perfil:
+                            _mask_m = (
+                                _mm[_col_diag_m].astype(str).str.lower().apply(lambda v: any(t in v for t in _EMACIADO)) &
+                                _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
+                            )
+                            _mr = _mm[_mask_m]
                     bd = _build_breakdown(_mr, _nr)
+                    total = sum(bd.values())
                 elif ind_key == 'DESN':
                     _TERMS = ['desnutrici','emaciado','aguda severa','aguda moderada','riesgo de desnutri']
                     _dcols = [c for c in (_mn.columns if not _mn.empty else []) if 'diagnós' in c.lower() or 'períme' in c.lower()]
                     def _has_d(row):
                         return any(any(t in str(row.get(c,'')).lower() for t in _TERMS) for c in _dcols)
                     _nd = _mn[_mn.apply(_has_d, axis=1)] if not _mn.empty and _dcols else pd.DataFrame()
-                    total = len(_nd)
                     bd = _build_breakdown(pd.DataFrame(), _nd)
+                    total = sum(bd.values())
                 else:
                     total, bd = 0, {}
 
