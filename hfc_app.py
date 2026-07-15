@@ -2189,12 +2189,10 @@ with tab_unicef:
                 elif ind_key == 'REF':
                     # Niños: emaciado o emaciado severo en diagnóstico peso/talla
                     _COL_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
-                    _EMACIADO = ['emaciado', 'emaciado severo', 'desnutrici', 'aguda severa', 'aguda moderada']
+                    _EMAC_RE = 'emaciado|desnutrici|aguda severa|aguda moderada'
                     _nr = pd.DataFrame()
                     if not _mn.empty and _COL_PT in _mn.columns:
-                        _nr = _mn[_mn[_COL_PT].astype(str).str.lower().apply(
-                            lambda v: any(t in v for t in _EMACIADO)
-                        )]
+                        _nr = _mn[_mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)]
                     # Maternas: embarazada/lactante con diagnóstico de desnutrición
                     _mr = pd.DataFrame()
                     if not _mm.empty:
@@ -2203,7 +2201,7 @@ with tab_unicef:
                         _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
                         if _col_diag_m and _col_perfil:
                             _mask_m = (
-                                _mm[_col_diag_m].astype(str).str.lower().apply(lambda v: any(t in v for t in _EMACIADO)) &
+                                _mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False) &
                                 _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
                             )
                             _mr = _mm[_mask_m]
