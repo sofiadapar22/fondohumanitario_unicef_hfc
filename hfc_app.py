@@ -23,7 +23,7 @@ META_REFERIDOS = 120
 META_DESNUT    = 120
 
 # Fechas límite por contacto
-FECHA_C1      = date(2026,  7, 30)   # C1: tamizaje en campo
+FECHA_C1      = date(2026,  7, 31)   # C1: tamizaje en campo
 FECHA_C2      = date(2026,  9, 15)   # C2: charla presencial en comunidades
 FECHA_C3      = date(2026, 10, 21)   # C3: retamizaje en campo
 FECHA_LIMITE  = date(2026, 11,  1)   # cierre general del proyecto
@@ -51,7 +51,7 @@ EQUIPOS = [
     ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Marcelino",   "Técnica Nutrición"),
     ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Pérez",       "Promotora"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Gaby Pino",          "Técnica Nutrición"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Brenda Nerios",      "Técnica Nutrición"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Brenda Nerio",      "Técnica Nutrición"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Claudia Patricia Mendez Guardado", "Promotora"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Henríquez", "Promotora"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Arriola",   "Promotora"),
