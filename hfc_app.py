@@ -259,6 +259,13 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
     ninos.loc[mask_talla_err, 'talla_nino'] = ninos.loc[mask_talla_err, 'talla_nino'] / 10
     ninos['talla_corregida'] = mask_talla_err  # flag para mostrar en Flags HFC
 
+    # Deduplicar: un niño puede aparecer en group_sr9jz33 (v2) Y sec3_salud_nutricion (v1)
+    # si el export de Kobo incluye ambas versiones. Se usa submission + nombre + fecha de nacimiento.
+    _dedup_cols = [c for c in ['_submission_id', '¿Cuál es el nombre del niño/a?',
+                                'Fecha de nacimiento del niño a evaluar'] if c in ninos.columns]
+    if _dedup_cols:
+        ninos = ninos.drop_duplicates(subset=_dedup_cols, keep='first').reset_index(drop=True)
+
     return ninos
 
 
@@ -2208,11 +2215,18 @@ with tab_unicef:
                     bd = _build_breakdown(_mr, _nr)
                     total = sum(bd.values())
                 elif ind_key == 'DESN':
-                    _TERMS = ['desnutrici','emaciado','aguda severa','aguda moderada','riesgo de desnutri']
-                    _dcols = [c for c in (_mn.columns if not _mn.empty else []) if 'diagnós' in c.lower() or 'períme' in c.lower()]
-                    def _has_d(row):
-                        return any(any(t in str(row.get(c,'')).lower() for t in _TERMS) for c in _dcols)
-                    _nd = _mn[_mn.apply(_has_d, axis=1)] if not _mn.empty and _dcols else pd.DataFrame()
+                    # Desnutrición AGUDA: solo P/T (emaciado/emaciado severo) y MUAC
+                    _DESN_RE = 'emaciado|desnutrici|aguda severa|aguda moderada'
+                    _COL_PT_D  = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+                    _COL_MUAC  = 'Diagnóstico nutricional según perímetro braquial'
+                    _nd = pd.DataFrame()
+                    if not _mn.empty:
+                        _mask_d = pd.Series(False, index=_mn.index)
+                        if _COL_PT_D in _mn.columns:
+                            _mask_d |= _mn[_COL_PT_D].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        if _COL_MUAC in _mn.columns:
+                            _mask_d |= _mn[_COL_MUAC].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        _nd = _mn[_mask_d]
                     bd = _build_breakdown(pd.DataFrame(), _nd)
                     total = sum(bd.values())
                 else:
