@@ -1723,7 +1723,32 @@ with tab_export:
         # Solo entrevistas, sin niños
         consolidado = df_raw.copy().join(hfc_lookup, on='_id', how='left')
 
-    # ─── 4. Botón de descarga ─────────────────────────────────────────────────
+    # ─── 4. Base de entrevistadas (raw + hfc_*) ───────────────────────────────
+    st.markdown("### 👩 Base de entrevistadas con limpieza HFC")
+    st.caption("Base raw de entrevistas (una fila por entrevistada) con columnas `hfc_*` de limpieza: nombre unificado, geografía corregida, talla corregida, duplicado, referencia, etc.")
+
+    entrevista_export_dl = df_raw.copy().join(hfc_lookup, on='_id', how='left')
+
+    c1e, c2e, c3e = st.columns([3, 1, 1])
+    c1e.caption(f"{len(entrevista_export_dl)} filas · {len(entrevista_export_dl.columns)} columnas")
+    c2e.metric("Filas", len(entrevista_export_dl))
+    c3e.metric("Columnas", len(entrevista_export_dl.columns))
+
+    buf_ent = io.BytesIO()
+    entrevista_export_dl.to_excel(buf_ent, index=False); buf_ent.seek(0)
+    st.download_button(
+        "⬇️ Base entrevistadas HFC (.xlsx)", buf_ent,
+        "base_entrevistadas_hfc.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    with st.expander("👁️ Vista previa (primeras 10 filas)"):
+        preview_cols_e = ['_id'] + [c for c in entrevista_export_dl.columns if c.startswith('hfc_')]
+        st.dataframe(entrevista_export_dl[[c for c in preview_cols_e if c in entrevista_export_dl.columns]].head(10),
+                     use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ─── 5. Botón de descarga base consolidada ────────────────────────────────
     st.markdown("### 📋 Base consolidada (niños + entrevista) con limpieza HFC")
     c1, c2, c3 = st.columns([3, 1, 1])
     c1.caption(f"{len(consolidado)} filas · {len(consolidado.columns)} columnas")
