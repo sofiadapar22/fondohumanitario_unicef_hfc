@@ -39,17 +39,23 @@ EQUIPOS = [
     # (Región, Equipo, Zona, Nombre, Rol)
     ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Helen Romero",      "Técnica Nutrición"),
     ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Fátima Gómez",      "Promotora"),
+    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Fatima Gomez",      "Promotora"),
     ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Fátima Granados",   "Técnica Nutrición"),
     ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Dolores",           "Promotora"),
+    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Arely Granados",    "Promotora"),
     ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Maryori Hernández", "Técnica Nutrición"),
     ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Yulissa Hernández", "Promotora"),
     ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Damaris González",  "Técnica Nutrición"),
     ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Norma Rivera",      "Promotora"),
     ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Geraldina Arriola", "Promotora"),
     ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Marcelino",   "Técnica Nutrición"),
+    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Pérez",       "Promotora"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Gaby Pino",          "Técnica Nutrición"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Brenda Nerios",      "Técnica Nutrición"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Claudia Patricia Mendez Guardado", "Promotora"),
     ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Henríquez", "Promotora"),
+    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Arriola",   "Promotora"),
+    ("Coordinación","Coordinación",                 "",                    "Trinidad Granados", "Coordinadora"),
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
 
@@ -794,6 +800,44 @@ with tab_avance:
                 st.warning(f"Zonas en datos sin meta definida: {', '.join(sorted(sin_meta))}")
             else:
                 st.success("✅ Todas las zonas tienen meta asignada.")
+
+    st.markdown("---")
+
+    # ── Tabla de personas referidas ──
+    st.markdown("**📋 Personas referidas**")
+    if 'referencia' in df.columns:
+        df_ref = df[df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
+        if df_ref.empty:
+            st.info("Aún no hay personas referidas registradas.")
+        else:
+            # Resumen por perfil
+            col_r1, col_r2, col_r3 = st.columns(3)
+            col_r1.metric("Total referidas", len(df_ref))
+            if 'perfil' in df_ref.columns:
+                n_ref_ninos   = int(df_ref['perfil'].astype(str).str.lower().str.contains('niño|niña|menor', na=False).sum())
+                n_ref_madres  = len(df_ref) - n_ref_ninos
+                col_r2.metric("Niños/as", n_ref_ninos)
+                col_r3.metric("Maternas", n_ref_madres)
+
+            # Detalle
+            cols_ref = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','canton_nombre','perfil'] if c in df_ref.columns]
+            ref_display = df_ref[cols_ref].rename(columns={
+                'nombre':          'Nombre',
+                'fecha_dia':       'Fecha',
+                'encuestador':     'Encuestadora',
+                'Municipio':       'Municipio',
+                'distrito_nombre': 'Distrito',
+                'canton_nombre':   'Cantón',
+                'perfil':          'Perfil',
+            }).sort_values('Fecha', ascending=False)
+            st.dataframe(ref_display, use_container_width=True, hide_index=True)
+
+            # Resumen por encuestadora
+            with st.expander("📊 Referencias por encuestadora"):
+                ref_enc = df_ref.groupby('encuestador').size().reset_index(name='Referencias').sort_values('Referencias', ascending=False)
+                st.dataframe(ref_enc, use_container_width=True, hide_index=True)
+    else:
+        st.info("Columna de referencia no disponible en los datos.")
 
     st.markdown("---")
 
