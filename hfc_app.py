@@ -2151,6 +2151,14 @@ with tab_unicef:
         _dist_col_m = 'Municipio' if not _df_u.empty and 'Municipio' in _df_u.columns else 'distrito_nombre'
         _dist_col_n = 'Municipio' if not _ninos_u.empty and 'Municipio' in _ninos_u.columns else 'distrito_nombre'
 
+        # IDs de entrevistadas que YA tienen niños registrados → no contar doble en TAM
+        _ids_con_ninos = set()
+        if not _ninos_u.empty:
+            for _col_id in ['_submission_id', '_submission__id', '_parent_index']:
+                if _col_id in _ninos_u.columns:
+                    _ids_con_ninos = set(_ninos_u[_col_id].dropna().astype(int))
+                    break
+
         for ind_key, ind_label in INDICADORES:
             for dist in DISTRITOS_UNICEF:
                 if not _df_u.empty and 'mes' in _df_u.columns and _dist_col_m in _df_u.columns:
@@ -2163,8 +2171,10 @@ with tab_unicef:
                     _mn = pd.DataFrame()
 
                 if ind_key == 'TAM':
-                    total = len(_mm) + len(_mn)
-                    bd = _build_breakdown(_mm, _mn)
+                    # Solo contar maternas SIN niños (las que tienen niños ya se cuentan a través de _mn)
+                    _mm_sin_ninos = _mm[~_mm['_id'].isin(_ids_con_ninos)] if not _mm.empty and '_id' in _mm.columns and _ids_con_ninos else _mm
+                    total = len(_mm_sin_ninos) + len(_mn)
+                    bd = _build_breakdown(_mm_sin_ninos, _mn)
                 elif ind_key == 'IYCF':
                     _mc = _mm[_mm['consejeria'].astype(str).str.contains('Sí|Si|1|True', case=False, na=False)] if not _mm.empty and 'consejeria' in _mm.columns else pd.DataFrame()
                     total = len(_mc)
