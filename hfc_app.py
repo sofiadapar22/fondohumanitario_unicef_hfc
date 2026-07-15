@@ -2123,6 +2123,19 @@ with tab_unicef:
     else:
         _mes_sel = st.selectbox("Mes de reporte", _meses_disp, index=len(_meses_disp)-1, key='unicef_mes')
 
+        with st.expander("🔍 Debug — valores en datos", expanded=False):
+            st.write("**Meses disponibles:**", _meses_disp)
+            st.write("**Mes seleccionado:**", _mes_sel)
+            if not _df_u.empty:
+                _dist_vals_m = _df_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _df_u.columns else []
+                st.write("**Municipio (maternas) — valores únicos:**", sorted(_dist_vals_m))
+                st.write(f"**Total maternas en mes {_mes_sel}:**", len(_df_u[_df_u['mes'] == _mes_sel]) if 'mes' in _df_u.columns else 'n/a')
+            if not _ninos_u.empty:
+                _dist_vals_n = _ninos_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _ninos_u.columns else []
+                st.write("**Municipio (niños) — valores únicos:**", sorted(_dist_vals_n))
+                st.write(f"**Total niños en mes {_mes_sel}:**", len(_ninos_u[_ninos_u['mes'] == _mes_sel]) if 'mes' in _ninos_u.columns else 'n/a')
+            st.write("**DISTRITOS_UNICEF:**", DISTRITOS_UNICEF)
+
         INDICADORES = [
             ('TAM',  '# de personas tamizadas para detectar desnutrición aguda en los municipios priorizados.'),
             ('IYCF', '# de personas que se benefician de la orientación e información comunitaria sobre alimentación de lactantes y niñas/niños pequeños en situaciones de emergencia (IYCF-E).'),
@@ -2134,20 +2147,30 @@ with tab_unicef:
         rows_tabla = []
         rows_export = []   # para el Excel descargable
 
+        # Columna de distrito para filtrar — Municipio contiene "Ahuachapán Centro" etc.
+        _dist_col_m = 'Municipio' if not _df_u.empty and 'Municipio' in _df_u.columns else 'distrito_nombre'
+        _dist_col_n = 'Municipio' if not _ninos_u.empty and 'Municipio' in _ninos_u.columns else 'distrito_nombre'
+
         for ind_key, ind_label in INDICADORES:
             for dist in DISTRITOS_UNICEF:
-                _mm = _df_u[(_df_u.get('mes','') == _mes_sel) & (_df_u.get('distrito_nombre', _df_u.get('Municipio','')) == dist)] if not _df_u.empty else pd.DataFrame()
-                _mn = _ninos_u[(_ninos_u.get('mes','') == _mes_sel) & (_ninos_u.get('distrito_nombre', _ninos_u.get('Municipio','')) == dist)] if not _ninos_u.empty else pd.DataFrame()
+                if not _df_u.empty and 'mes' in _df_u.columns and _dist_col_m in _df_u.columns:
+                    _mm = _df_u[(_df_u['mes'] == _mes_sel) & (_df_u[_dist_col_m] == dist)]
+                else:
+                    _mm = pd.DataFrame()
+                if not _ninos_u.empty and 'mes' in _ninos_u.columns and _dist_col_n in _ninos_u.columns:
+                    _mn = _ninos_u[(_ninos_u['mes'] == _mes_sel) & (_ninos_u[_dist_col_n] == dist)]
+                else:
+                    _mn = pd.DataFrame()
 
                 if ind_key == 'TAM':
                     total = len(_mm) + len(_mn)
                     bd = _build_breakdown(_mm, _mn)
                 elif ind_key == 'IYCF':
-                    _mc = _mm[_mm['consejeria']] if not _mm.empty and 'consejeria' in _mm.columns else pd.DataFrame()
+                    _mc = _mm[_mm['consejeria'].astype(str).str.contains('Sí|Si|1|True', case=False, na=False)] if not _mm.empty and 'consejeria' in _mm.columns else pd.DataFrame()
                     total = len(_mc)
                     bd = _build_breakdown(_mc, pd.DataFrame())
                 elif ind_key == 'REF':
-                    _mr = _mm[_mm['referencia']] if not _mm.empty and 'referencia' in _mm.columns else pd.DataFrame()
+                    _mr = _mm[_mm['referencia'].astype(str).str.contains('Sí|Si|1|True', case=False, na=False)] if not _mm.empty and 'referencia' in _mm.columns else pd.DataFrame()
                     _nr = _mn[_mn['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False)] if not _mn.empty and '¿Se brindó referencia?' in _mn.columns else pd.DataFrame()
                     total = len(_mr) + len(_nr)
                     bd = _build_breakdown(_mr, _nr)
