@@ -939,13 +939,17 @@ with tab_avance:
     st.markdown("---")
     # ── Avance por zona vs meta propuesta ──
     st.markdown("**Avance por zona vs. meta propuesta**")
-    # Siempre mostrar las 6 zonas del plan, aunque tengan 0 tamizados
+    # Tamizados = niños + maternas sin niños (misma lógica que el dashboard principal)
     mun_base = pd.DataFrame({
         'Municipio': list(METAS_ZONA.keys()),
         'Meta zona': list(METAS_ZONA.values()),
     })
-    if not ninos.empty and 'Municipio' in ninos.columns:
-        mun_actual = ninos.groupby('Municipio').size().reset_index(name='Tamizados')
+    _ids_con_n_avz = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
+    _nin_mun  = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
+    _mat_mun  = df[~df['_id'].isin(_ids_con_n_avz)][['Municipio']].copy() if '_id' in df.columns and 'Municipio' in df.columns else pd.DataFrame(columns=['Municipio'])
+    _tam_mun  = pd.concat([_nin_mun, _mat_mun], ignore_index=True)
+    if not _tam_mun.empty:
+        mun_actual = _tam_mun.groupby('Municipio').size().reset_index(name='Tamizados')
     else:
         mun_actual = pd.DataFrame(columns=['Municipio','Tamizados'])
 
@@ -1901,37 +1905,39 @@ with tab_enc:
         # Mapa encuestador → equipo y zona
         _enc_equipo = DF_EQUIPOS[['Nombre','Equipo','Zona','Región']].drop_duplicates('Nombre').set_index('Nombre')
 
-        # Base combinada: niños + maternas sin niños (sin doble conteo) por encuestador
+        # Base combinada: niños + maternas sin niños (sin doble conteo)
         _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
-        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia']].copy() if '_id' in df.columns else pd.DataFrame()
-        _nin_enc_base = ninos[['encuestador','fecha_dia']].copy()
+        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia','Municipio']].copy() if '_id' in df.columns else pd.DataFrame()
+        _nin_enc_base = ninos[['encuestador','fecha_dia','Municipio']].copy() if 'Municipio' in ninos.columns else ninos[['encuestador','fecha_dia']].copy()
         _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
 
-        _todos_enc = _todos_enc_base.groupby('encuestador').agg(
-            Tamizados=('encuestador','count'),
-            Dias_campo=('fecha_dia', pd.Series.nunique)
-        ).reset_index()
-        _todos_enc['Equipo'] = _todos_enc['encuestador'].map(_enc_equipo['Equipo'])
-        _todos_enc['Región'] = _todos_enc['encuestador'].map(_enc_equipo['Región'])
-        _todos_enc['Zona']   = _todos_enc['encuestador'].map(_enc_equipo['Zona'])
+        # Mapa Zona → Equipo/Región (para cruzar por Municipio, no por encuestador)
+        _zona_eq_map = (DF_EQUIPOS[['Zona','Equipo','Región']]
+                        .drop_duplicates('Zona').set_index('Zona'))
+
+        # Agrupar tamizados por Municipio (= Zona), cruzar con Equipo/Región
+        _todos_enc_base['Equipo'] = _todos_enc_base['encuestador'].map(_enc_equipo['Equipo'])
+        _todos_enc_base['Zona_enc'] = _todos_enc_base['encuestador'].map(_enc_equipo['Zona'])
 
         # Para días de campo por equipo: días ÚNICOS donde cualquier miembro trabajó
-        _todos_with_eq = _todos_enc_base.copy()
-        _todos_with_eq['Equipo'] = _todos_with_eq['encuestador'].map(_enc_equipo['Equipo'])
         _dias_por_equipo = (
-            _todos_with_eq.dropna(subset=['Equipo','fecha_dia'])
+            _todos_enc_base.dropna(subset=['Equipo','fecha_dia'])
             .groupby('Equipo')['fecha_dia'].nunique()
             .reset_index(name='Días campo equipo')
         )
 
-        # Agrupar por equipo (nivel detalle) — tamizados = niños + maternas
-        _resumen_equipo = _todos_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona']).agg(
-            Tamizados=('Tamizados','sum')
-        ).reset_index()
+        # Agrupar por Municipio (zona real del dato) → tamizados completos sin perder nada
+        _mun_col = 'Municipio' if 'Municipio' in _todos_enc_base.columns else 'Zona_enc'
+        _resumen_mun = (_todos_enc_base.groupby(_mun_col).size()
+                        .reset_index(name='Tamizados')
+                        .rename(columns={_mun_col: 'Zona'}))
+        _resumen_mun['Región'] = _resumen_mun['Zona'].map(_zona_eq_map['Región'])
+        _resumen_mun['Equipo'] = _resumen_mun['Zona'].map(_zona_eq_map['Equipo'])
+        _resumen_equipo = _resumen_mun.dropna(subset=['Equipo']).copy()
         _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
         _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo']).round(1)
 
-        # Días únicos globales
+        # Días únicos globales y total
         _dias_globales = _todos_enc_base['fecha_dia'].nunique()
         _total_global  = len(_todos_enc_base)
         _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
