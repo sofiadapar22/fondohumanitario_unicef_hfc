@@ -1924,51 +1924,26 @@ with tab_enc:
                      help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
         _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
 
-        # Cruzar con meta por zona — agrupar por Zona para que cada zona aparezca UNA sola vez
-        _zona_meta = pd.Series(METAS_ZONA, name='Meta').reset_index().rename(columns={'index':'Zona'})
-        _resumen_eq_meta = _resumen_equipo.merge(_zona_meta, on='Zona', how='left')
-
-        # Tabla: agrupar por Zona (una fila por zona, combinando equipos de la misma zona)
-        _equipos_por_zona = _resumen_equipo.groupby('Zona')['Equipo'].apply(lambda x: ' + '.join(sorted(x.unique()))).reset_index()
-        _dias_por_zona    = _resumen_equipo.groupby('Zona')['Días campo equipo'].max().reset_index()
-        _region_por_zona  = _resumen_equipo.groupby('Zona')['Región'].first().reset_index()
-        _resumen_zona = _resumen_eq_meta.groupby('Zona', as_index=False).agg(
-            Tamizados=('Tamizados','sum'), Meta=('Meta','first')
-        )
-        _resumen_zona = (_resumen_zona
-            .merge(_region_por_zona, on='Zona', how='left')
-            .merge(_equipos_por_zona, on='Zona', how='left')
-            .merge(_dias_por_zona, on='Zona', how='left')
-        )
-        _resumen_zona['% Meta']     = (_resumen_zona['Tamizados'] / _resumen_zona['Meta'] * 100).round(1)
-        _resumen_zona['Pendientes'] = (_resumen_zona['Meta'] - _resumen_zona['Tamizados']).clip(lower=0)
-        _resumen_zona['Prom./día']  = (_resumen_zona['Tamizados'] / _resumen_zona['Días campo equipo']).round(1)
-
+        # Tabla por equipo — solo avance, sin metas
         st.dataframe(
-            _resumen_zona[['Región','Equipo','Zona','Tamizados','Meta','% Meta','Pendientes','Días campo equipo','Prom./día']]
+            _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']]
             .sort_values('Tamizados', ascending=False),
             use_container_width=True, hide_index=True
         )
-        # Mantener _resumen_eq_meta para la gráfica (nivel equipo)
-        _resumen_eq_meta['% Meta'] = (_resumen_eq_meta['Tamizados'] / _resumen_eq_meta['Meta'] * 100).round(1)
-        _resumen_eq_meta['Pendientes'] = (_resumen_eq_meta['Meta'] - _resumen_eq_meta['Tamizados']).clip(lower=0)
+        # Para la gráfica mantenemos el mismo dataframe
+        _resumen_eq_meta = _resumen_equipo.copy()
 
-        # Gráfica: tamizados vs meta por equipo (agrupa zonas del mismo equipo)
-        st.markdown("**📊 Avance vs Meta por equipo**")
+        # Gráfica: tamizados por equipo
+        st.markdown("**📊 Tamizados por equipo**")
         _chart_eq_agg = _resumen_eq_meta.groupby('Equipo', as_index=False).agg(
-            Tamizados=('Tamizados','sum'), Meta=('Meta','sum'), Pendientes=('Pendientes','sum')
+            Tamizados=('Tamizados','sum')
         ).sort_values('Tamizados')
-        _fig_eq = go.Figure()
-        _fig_eq.add_trace(go.Bar(
-            name='Tamizados', x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Tamizados'].tolist(),
-            marker_color='#2ecc71', text=_chart_eq_agg['Tamizados'].tolist(), textposition='outside'
+        _fig_eq = go.Figure(go.Bar(
+            x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Tamizados'].tolist(),
+            marker_color='#4472C4', text=_chart_eq_agg['Tamizados'].tolist(), textposition='outside'
         ))
-        _fig_eq.add_trace(go.Bar(
-            name='Pendientes', x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Pendientes'].tolist(),
-            marker_color='#e74c3c', text=_chart_eq_agg['Pendientes'].tolist(), textposition='outside'
-        ))
-        _fig_eq.update_layout(barmode='group', margin=dict(t=40, b=60), height=380,
-                               yaxis_title='Personas', xaxis_tickangle=-20)
+        _fig_eq.update_layout(margin=dict(t=40, b=60), height=360,
+                               yaxis_title='Tamizados', xaxis_tickangle=-20, plot_bgcolor='white')
         st.plotly_chart(_fig_eq, use_container_width=True)
 
         # Gráfica: promedio diario por equipo
@@ -1986,6 +1961,8 @@ with tab_enc:
         st.markdown("**📅 Avance diario por equipo**")
         if not ninos.empty and 'fecha_dia' in ninos.columns and 'encuestador' in ninos.columns:
             _ninos_eq = ninos.copy()
+            # Normalizar fecha_dia a solo fecha (sin timestamp)
+            _ninos_eq['fecha_dia'] = pd.to_datetime(_ninos_eq['fecha_dia'], errors='coerce').dt.date
             _ninos_eq['Equipo'] = _ninos_eq['encuestador'].map(_enc_equipo['Equipo'])
 
             # Filtro por semana
@@ -2006,7 +1983,7 @@ with tab_enc:
             for _i, _eq in enumerate(_equipos_activos):
                 _subset = _ninos_eq[_ninos_eq['Equipo'] == _eq]
                 _diario_eq = _subset.groupby('fecha_dia').size().reset_index(name='Tamizados')
-                _diario_eq['fecha_dia'] = _diario_eq['fecha_dia'].astype(str)
+                _diario_eq['fecha_dia'] = pd.to_datetime(_diario_eq['fecha_dia'], errors='coerce').dt.strftime('%d/%m')
                 with _cols_eq[_i % 2]:
                     _fig_deq = go.Figure(go.Bar(
                         x=_diario_eq['fecha_dia'].tolist(),
