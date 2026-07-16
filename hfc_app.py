@@ -1387,7 +1387,7 @@ with tab_escenarios:
     _fecha_inicio_of = date(2026, 5, 29)
     _hoy_ms          = date.today()
     _dias_trab       = max((_hoy_ms - _fecha_inicio_of).days, 1)
-    _n_equipos_ms    = 5   # equipos de campo activos (sin coordinación)
+    _n_equipos_ms    = 7   # equipos de campo activos (sin coordinación)
     _logrados_ms     = total_tamizados   # niños + maternas sin niños
     _faltantes_ms    = max(META_TAMIZAJE - _logrados_ms, 0)
     _ritmo_real_ms   = round(_logrados_ms / _dias_trab)
@@ -1943,6 +1943,22 @@ with tab_enc:
         st.markdown("**⚡ Promedio diario por equipo**")
         _chart_prom = _resumen_eq_meta.dropna(subset=['Prom./día']).set_index('Equipo')['Prom./día'].sort_values()
         st.bar_chart(_chart_prom)
+
+        # Gráficas de avance diario por equipo (una por equipo)
+        st.markdown("**📅 Avance diario por equipo**")
+        if not ninos.empty and 'fecha_dia' in ninos.columns and 'encuestador' in ninos.columns:
+            _ninos_eq = ninos.copy()
+            _ninos_eq['Equipo'] = _ninos_eq['encuestador'].map(_enc_equipo['Equipo'])
+            _equipos_activos = sorted(_ninos_eq['Equipo'].dropna().unique())
+            # 2 columnas
+            _cols_eq = st.columns(2)
+            for _i, _eq in enumerate(_equipos_activos):
+                _subset = _ninos_eq[_ninos_eq['Equipo'] == _eq]
+                _diario_eq = _subset.groupby('fecha_dia').size().reset_index(name='Tamizados')
+                _diario_eq['fecha_dia'] = _diario_eq['fecha_dia'].astype(str)
+                with _cols_eq[_i % 2]:
+                    st.markdown(f"**{_eq}**")
+                    st.bar_chart(_diario_eq.set_index('fecha_dia')['Tamizados'], height=220)
     else:
         st.info("Sin datos suficientes para resumen por equipo.")
 
