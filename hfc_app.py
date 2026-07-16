@@ -1901,7 +1901,7 @@ with tab_enc:
             .reset_index(name='Días campo equipo')
         )
 
-        # Agrupar por equipo
+        # Agrupar por equipo (nivel detalle)
         _resumen_equipo = _ninos_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona']).agg(
             Tamizados=('Tamizados','sum')
         ).reset_index()
@@ -1923,17 +1923,34 @@ with tab_enc:
                      help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
         _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
 
-        # Cruzar con meta por zona
+        # Cruzar con meta por zona — agrupar por Zona para que cada zona aparezca UNA sola vez
         _zona_meta = pd.Series(METAS_ZONA, name='Meta').reset_index().rename(columns={'index':'Zona'})
         _resumen_eq_meta = _resumen_equipo.merge(_zona_meta, on='Zona', how='left')
-        _resumen_eq_meta['% Meta'] = (_resumen_eq_meta['Tamizados'] / _resumen_eq_meta['Meta'] * 100).round(1)
-        _resumen_eq_meta['Pendientes'] = (_resumen_eq_meta['Meta'] - _resumen_eq_meta['Tamizados']).clip(lower=0)
+
+        # Tabla: agrupar por Zona (una fila por zona, combinando equipos de la misma zona)
+        _equipos_por_zona = _resumen_equipo.groupby('Zona')['Equipo'].apply(lambda x: ' + '.join(sorted(x.unique()))).reset_index()
+        _dias_por_zona    = _resumen_equipo.groupby('Zona')['Días campo equipo'].max().reset_index()
+        _region_por_zona  = _resumen_equipo.groupby('Zona')['Región'].first().reset_index()
+        _resumen_zona = _resumen_eq_meta.groupby('Zona', as_index=False).agg(
+            Tamizados=('Tamizados','sum'), Meta=('Meta','first')
+        )
+        _resumen_zona = (_resumen_zona
+            .merge(_region_por_zona, on='Zona', how='left')
+            .merge(_equipos_por_zona, on='Zona', how='left')
+            .merge(_dias_por_zona, on='Zona', how='left')
+        )
+        _resumen_zona['% Meta']     = (_resumen_zona['Tamizados'] / _resumen_zona['Meta'] * 100).round(1)
+        _resumen_zona['Pendientes'] = (_resumen_zona['Meta'] - _resumen_zona['Tamizados']).clip(lower=0)
+        _resumen_zona['Prom./día']  = (_resumen_zona['Tamizados'] / _resumen_zona['Días campo equipo']).round(1)
 
         st.dataframe(
-            _resumen_eq_meta[['Región','Equipo','Zona','Tamizados','Meta','% Meta','Pendientes','Días campo equipo','Prom./día']]
+            _resumen_zona[['Región','Equipo','Zona','Tamizados','Meta','% Meta','Pendientes','Días campo equipo','Prom./día']]
             .sort_values('Tamizados', ascending=False),
             use_container_width=True, hide_index=True
         )
+        # Mantener _resumen_eq_meta para la gráfica (nivel equipo)
+        _resumen_eq_meta['% Meta'] = (_resumen_eq_meta['Tamizados'] / _resumen_eq_meta['Meta'] * 100).round(1)
+        _resumen_eq_meta['Pendientes'] = (_resumen_eq_meta['Meta'] - _resumen_eq_meta['Tamizados']).clip(lower=0)
 
         # Gráfica: tamizados vs meta por equipo (agrupa zonas del mismo equipo)
         st.markdown("**📊 Avance vs Meta por equipo**")
