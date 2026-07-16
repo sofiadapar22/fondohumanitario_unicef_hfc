@@ -1326,6 +1326,40 @@ with tab_escenarios:
 
     st.markdown("---")
 
+    # ── AVANCE SEMANAL ────────────────────────────────────────────────────────
+    st.markdown("### 📅 Avance por semana")
+    if not ninos.empty and 'semana' in ninos.columns:
+        _sem_n = ninos.groupby('semana').size().reset_index(name='Tamizados semana')
+        _sem_n['semana'] = pd.to_datetime(_sem_n['semana'].astype(str))
+        _sem_n = _sem_n.sort_values('semana')
+        _sem_n['Acumulado']     = _sem_n['Tamizados semana'].cumsum()
+        _sem_n['% Meta']        = (_sem_n['Acumulado'] / META_TAMIZAJE * 100).round(1)
+        # Tasa de crecimiento semana a semana
+        _sem_n['Crecimiento %'] = _sem_n['Tamizados semana'].pct_change().mul(100).round(1)
+        _sem_n['semana_str']    = _sem_n['semana'].dt.strftime('Sem %d/%m')
+
+        # KPIs
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _ult_sem  = _sem_n.iloc[-1]
+        _pen_sem  = _sem_n.iloc[-2] if len(_sem_n) >= 2 else None
+        _sc1.metric("Última semana", f"{int(_ult_sem['Tamizados semana'])} tamizajes")
+        _sc2.metric("Crecimiento vs semana anterior",
+                    f"{_ult_sem['Crecimiento %']:+.1f}%" if pd.notna(_ult_sem['Crecimiento %']) else "—",
+                    delta_color="normal")
+        _sc3.metric("Promedio por semana", f"{_sem_n['Tamizados semana'].mean():.0f} tamizajes")
+
+        # Tabla
+        _sem_display = _sem_n[['semana_str','Tamizados semana','Acumulado','% Meta','Crecimiento %']].copy()
+        _sem_display.columns = ['Semana','Tamizados','Acumulado','% Meta','Crec. sem. ant. (%)']
+        st.dataframe(_sem_display, use_container_width=True, hide_index=True)
+
+        # Gráfica semanal
+        st.bar_chart(_sem_n.set_index('semana_str')['Tamizados semana'])
+    else:
+        st.info("Sin datos de semana disponibles.")
+
+    st.markdown("---")
+
     # Equipo actual
     N_EQUIPOS_ACTUAL  = 6   # parejas actuales
     N_PERSONAS_TOTAL  = 13  # personas individuales (sin la promotora pendiente)
@@ -1764,6 +1798,54 @@ with tab_out:
 # ── TAB 7: POR ENCUESTADORA ────────────────────
 with tab_enc:
     st.subheader("👩‍💼 Equipos y Encuestadoras")
+
+    # ── RESUMEN CONSOLIDADO POR EQUIPO ───────────────────────────────────────
+    st.markdown("### 📊 Resumen por equipo")
+
+    if not ninos.empty and 'encuestador' in ninos.columns and 'fecha_dia' in ninos.columns:
+        # Mapa encuestador → equipo y zona
+        _enc_equipo = DF_EQUIPOS[['Nombre','Equipo','Zona','Región']].drop_duplicates('Nombre').set_index('Nombre')
+
+        # Tamizajes de niños por encuestador
+        _ninos_enc = ninos.groupby('encuestador').agg(
+            Tamizados=('encuestador','count'),
+            Dias_campo=('fecha_dia', pd.Series.nunique)
+        ).reset_index()
+        _ninos_enc['Equipo']  = _ninos_enc['encuestador'].map(_enc_equipo['Equipo'])
+        _ninos_enc['Región']  = _ninos_enc['encuestador'].map(_enc_equipo['Región'])
+        _ninos_enc['Zona']    = _ninos_enc['encuestador'].map(_enc_equipo['Zona'])
+
+        # Para días de campo por equipo: días ÚNICOS donde cualquier miembro del equipo trabajó
+        _ninos_with_equipo = ninos.copy()
+        _ninos_with_equipo['Equipo'] = _ninos_with_equipo['encuestador'].map(_enc_equipo['Equipo'])
+        _dias_por_equipo = (
+            _ninos_with_equipo.dropna(subset=['Equipo','fecha_dia'])
+            .groupby('Equipo')['fecha_dia'].nunique()
+            .reset_index(name='Días campo equipo')
+        )
+
+        # Agrupar por equipo
+        _resumen_equipo = _ninos_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona']).agg(
+            Tamizados=('Tamizados','sum')
+        ).reset_index()
+        _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
+        _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo']).round(1)
+
+        # KPIs rápidos
+        _col1, _col2, _col3 = st.columns(3)
+        _col1.metric("Total equipos activos", int((_resumen_equipo['Tamizados'] > 0).sum()))
+        _col2.metric("Promedio tamizajes/día (global)", f"{(_resumen_equipo['Tamizados'].sum() / _resumen_equipo['Días campo equipo'].max()):,.1f}" if _resumen_equipo['Días campo equipo'].max() > 0 else "—")
+        _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
+
+        st.dataframe(
+            _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']]
+            .sort_values('Tamizados', ascending=False),
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("Sin datos suficientes para resumen por equipo.")
+
+    st.markdown("---")
 
     # Estructura de equipos
     st.markdown("**Estructura de equipos de campo**")
