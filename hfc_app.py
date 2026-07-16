@@ -1831,10 +1831,19 @@ with tab_enc:
         _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
         _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo']).round(1)
 
+        # Días únicos con actividad (cualquier equipo) — para promedio global consistente
+        _dias_globales = ninos['fecha_dia'].nunique() if 'fecha_dia' in ninos.columns else 1
+        # Total tamizados = niños + maternas sin niños (igual que el dashboard principal)
+        _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
+        _mat_sin_ninos = len(df[~df['_id'].isin(_ids_con_ninos_enc)]) if '_id' in df.columns else 0
+        _total_global = len(ninos) + _mat_sin_ninos
+        _prom_global  = _total_global / _dias_globales if _dias_globales > 0 else 0
+
         # KPIs rápidos
         _col1, _col2, _col3 = st.columns(3)
         _col1.metric("Total equipos activos", int((_resumen_equipo['Tamizados'] > 0).sum()))
-        _col2.metric("Promedio tamizajes/día (global)", f"{(_resumen_equipo['Tamizados'].sum() / _resumen_equipo['Días campo equipo'].max()):,.1f}" if _resumen_equipo['Días campo equipo'].max() > 0 else "—")
+        _col2.metric("Promedio tamizajes/día (global)", f"{_prom_global:.1f}",
+                     help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
         _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
 
         st.dataframe(
