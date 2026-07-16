@@ -37,25 +37,23 @@ PERFILES_MATERNAS   = PERFILES_EMBARAZADA + PERFILES_LACTANTE
 # Estructura de equipos de campo
 EQUIPOS = [
     # (Región, Equipo, Zona, Nombre, Rol)
-    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Helen Romero",      "Técnica Nutrición"),
-    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Fátima Gómez",      "Promotora"),
-    ("Oriente",     "Equipo 1 Usulután",          "Usulután Este",        "Fatima Gomez",      "Promotora"),
-    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Fátima Granados",   "Técnica Nutrición"),
-    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Dolores",           "Promotora"),
-    ("Oriente",     "Equipo 2 San Miguel Centro",  "San Miguel Centro",    "Arely Granados",    "Promotora"),
-    ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Maryori Hernández", "Técnica Nutrición"),
-    ("Oriente",     "Equipo 3 Moncagua/San Miguel","San Miguel Centro",    "Yulissa Hernández", "Promotora"),
-    ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Damaris González",  "Técnica Nutrición"),
-    ("Occidente",   "Equipo 1 Santa Ana Centro",   "Santa Ana Centro",     "Norma Rivera",      "Promotora"),
-    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Geraldina Arriola", "Promotora"),
-    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Marcelino",   "Técnica Nutrición"),
-    ("Occidente",   "Equipo 2 Ahuachapán",         "Ahuachapán Centro",    "Yeldi Pérez",       "Promotora"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Gaby Pino",          "Técnica Nutrición"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Brenda Nerio",      "Técnica Nutrición"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Centro","Claudia Patricia Mendez Guardado", "Promotora"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Henríquez", "Promotora"),
-    ("San Salvador","Equipo SS Centro/Tonacatepeque","San Salvador Este",  "Rosibel Arriola",   "Promotora"),
-    ("Coordinación","Coordinación",                 "",                    "Trinidad Granados", "Coordinadora"),
+    ("Oriente",     "Equipo 1 Usulután",       "Usulután Este",     "Helen Romero",                    "Técnica Nutrición"),
+    ("Oriente",     "Equipo 1 Usulután",       "Usulután Este",     "Fátima Gómez",                    "Promotora"),
+    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Fátima Granados",                 "Técnica Nutrición"),
+    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Dolores",                         "Promotora"),
+    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Arely Granados",                  "Promotora"),
+    ("Oriente",     "Equipo 3 Moncagua",       "San Miguel Centro", "Maryori Hernández",               "Técnica Nutrición"),
+    ("Oriente",     "Equipo 3 Moncagua",       "San Miguel Centro", "Yulissa Hernández",               "Promotora"),
+    ("Occidente",   "Equipo 4 Santa Ana",      "Santa Ana Centro",  "Damaris González",                "Técnica Nutrición"),
+    ("Occidente",   "Equipo 4 Santa Ana",      "Santa Ana Centro",  "Norma Rivera",                    "Promotora"),
+    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Marcelino",                 "Técnica Nutrición"),
+    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Geraldina Arriola",               "Promotora"),
+    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Pérez",                     "Promotora"),
+    ("San Salvador","Equipo 6 SS Centro",      "San Salvador Centro","Gaby Pino",                      "Técnica Nutrición"),
+    ("San Salvador","Equipo 6 SS Centro",      "San Salvador Centro","Claudia Patricia Mendez Guardado","Promotora"),
+    ("San Salvador","Equipo 7 SS Este",        "San Salvador Este",  "Brenda Nerio",                   "Técnica Nutrición"),
+    ("San Salvador","Equipo 7 SS Este",        "San Salvador Este",  "Rosibel Henríquez",              "Promotora"),
+    ("Coordinación","Coordinación",            "",                   "Trinidad Granados",               "Coordinadora"),
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
 
@@ -1384,6 +1382,76 @@ with tab_escenarios:
     st.markdown(f"> **Ritmo actual:** {tasa_total_actual} tamizajes/día en total · {tasa_por_equipo} por equipo (÷ {N_EQUIPOS_ACTUAL} equipos)")
 
     # ── ESCENARIOS EN EQUIPOS (parejas) ──
+    # ── CÁLCULO META SEMANAL ────────────────────────────────────────────────
+    st.markdown("### 🎯 Cálculo de Meta Semanal")
+    _fecha_inicio_of = date(2026, 5, 29)
+    _hoy_ms          = date.today()
+    _dias_trab       = max((_hoy_ms - _fecha_inicio_of).days, 1)
+    _n_equipos_ms    = 5   # equipos de campo activos (sin coordinación)
+    _logrados_ms     = total_tamizados   # niños + maternas sin niños
+    _faltantes_ms    = max(META_TAMIZAJE - _logrados_ms, 0)
+    _ritmo_real_ms   = round(_logrados_ms / _dias_trab)
+    _ritmo_real_sem  = _ritmo_real_ms * 5   # 5 días campo/semana aprox
+    _dias_c1_ms      = max((FECHA_C1 - _hoy_ms).days, 1)
+    _semanas_rest    = max(_dias_c1_ms / 5, 1)
+    _ritmo_opt_sem   = round(_faltantes_ms / _semanas_rest) if _semanas_rest > 0 else _faltantes_ms
+    _ritmo_opt_eq    = round(_ritmo_opt_sem / _n_equipos_ms) if _n_equipos_ms > 0 else _ritmo_opt_sem
+    _ritmo_esp_sem   = round(META_TAMIZAJE / ((_hoy_ms - _fecha_inicio_of + timedelta(days=_dias_c1_ms)).days / 5))
+    _diferencia      = _ritmo_real_sem - _ritmo_esp_sem
+    _fecha_opt       = _hoy_ms + timedelta(days=int(_faltantes_ms / _ritmo_real_ms)) if _ritmo_real_ms > 0 else None
+
+    _ms_c1, _ms_c2 = st.columns(2)
+    with _ms_c1:
+        st.markdown("**📋 Resumen de avance**")
+        _tabla_ms = {
+            'Concepto': [
+                'Meta total (niños C1)', 'Logrados a la fecha', 'Faltantes',
+                'Fecha inicio oficial', 'Días trabajados',
+                'Ritmo real diario', 'Ritmo real semanal',
+                'Fecha estimada finalización', 'Fecha óptima C1',
+                'Días restantes C1',
+            ],
+            'Valor': [
+                f"{META_TAMIZAJE:,}", f"{_logrados_ms:,}", f"{_faltantes_ms:,}",
+                _fecha_inicio_of.strftime('%d/%m/%Y'), str(_dias_trab),
+                f"{_ritmo_real_ms}/día", f"{_ritmo_real_sem}/semana",
+                _fecha_opt.strftime('%d/%m/%Y') if _fecha_opt else '—',
+                FECHA_C1.strftime('%d/%m/%Y'),
+                str(_dias_c1_ms),
+            ]
+        }
+        st.dataframe(pd.DataFrame(_tabla_ms), use_container_width=True, hide_index=True)
+
+    with _ms_c2:
+        st.markdown("**🚀 Ritmo óptimo para cumplir meta**")
+        _tabla_opt = {
+            'Concepto': [
+                'N° equipos de campo', 'Semanas restantes C1',
+                'Ritmo esperado semanal', 'Ritmo real semanal', 'Diferencia',
+                'Personas faltantes',
+                'Ritmo óptimo SEMANAL actualizado',
+                f'Por equipo/día ({_n_equipos_ms} equipos)',
+            ],
+            'Valor': [
+                str(_n_equipos_ms), f"{_semanas_rest:.1f}",
+                f"{_ritmo_esp_sem}", f"{_ritmo_real_sem}",
+                f"{_diferencia:+d} {'✅' if _diferencia >= 0 else '⚠️'}",
+                f"{_faltantes_ms:,}",
+                f"{_ritmo_opt_sem:,}/semana",
+                f"{_ritmo_opt_eq}/día por equipo",
+            ]
+        }
+        st.dataframe(pd.DataFrame(_tabla_opt), use_container_width=True, hide_index=True)
+
+        # Gráfica ritmo real vs esperado
+        _chart_ritmo = pd.DataFrame({
+            'Ritmo real semanal':    [_ritmo_real_sem],
+            'Ritmo esperado semanal':[_ritmo_esp_sem],
+        })
+        st.bar_chart(_chart_ritmo.T.rename(columns={0:'Tamizajes/semana'}))
+
+    st.markdown("---")
+
     st.markdown("### 👥 Escenarios trabajando en equipos (parejas)")
     st.caption("Cada equipo = 2 personas (técnica + promotora). Los sliders son **por equipo**. La capacidad total se calcula automáticamente.")
 
@@ -1853,11 +1921,28 @@ with tab_enc:
                      help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
         _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
 
+        # Cruzar con meta por zona
+        _zona_meta = pd.Series(METAS_ZONA, name='Meta').reset_index().rename(columns={'index':'Zona'})
+        _resumen_eq_meta = _resumen_equipo.merge(_zona_meta, on='Zona', how='left')
+        _resumen_eq_meta['% Meta'] = (_resumen_eq_meta['Tamizados'] / _resumen_eq_meta['Meta'] * 100).round(1)
+        _resumen_eq_meta['Pendientes'] = (_resumen_eq_meta['Meta'] - _resumen_eq_meta['Tamizados']).clip(lower=0)
+
         st.dataframe(
-            _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']]
+            _resumen_eq_meta[['Región','Equipo','Zona','Tamizados','Meta','% Meta','Pendientes','Días campo equipo','Prom./día']]
             .sort_values('Tamizados', ascending=False),
             use_container_width=True, hide_index=True
         )
+
+        # Gráfica: tamizados vs meta por equipo
+        st.markdown("**📊 Avance vs Meta por equipo**")
+        _chart_eq = _resumen_eq_meta.set_index('Equipo')[['Tamizados','Pendientes']].sort_values('Tamizados', ascending=True)
+        st.bar_chart(_chart_eq, color=['#2ecc71','#e74c3c'])
+        st.caption("🟢 Tamizados  🔴 Pendientes")
+
+        # Gráfica: promedio diario por equipo
+        st.markdown("**⚡ Promedio diario por equipo**")
+        _chart_prom = _resumen_eq_meta.dropna(subset=['Prom./día']).set_index('Equipo')['Prom./día'].sort_values()
+        st.bar_chart(_chart_prom)
     else:
         st.info("Sin datos suficientes para resumen por equipo.")
 
