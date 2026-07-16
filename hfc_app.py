@@ -2203,10 +2203,36 @@ with tab_enc:
             _fig_sem_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=380, yaxis_title='Tamizados')
             st.plotly_chart(_fig_sem_eq, use_container_width=True)
 
+    # ── REGISTROS SIN ENCUESTADORA ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**⚠️ Registros sin encuestadora asignada**")
+    st.caption("Estos registros están incluidos en el total de 535 del dashboard pero no aparecen en los pivots de semana/día porque Kobo los guardó sin encuestadora. Revísalos y corrígelos en Kobo o asígnalos manualmente.")
+
+    # Ninos sin encuestador
+    _nin_sin_enc = ninos[ninos['encuestador'].isna()].copy() if not ninos.empty else pd.DataFrame()
+    # Maternas sin encuestador (que no tienen hijos en ninos)
+    _ids_con_n2  = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
+    _mat_sin_enc = df[df['encuestador'].isna() & ~df['_id'].isin(_ids_con_n2)].copy() if '_id' in df.columns else pd.DataFrame()
+
+    _cols_nin = [c for c in ['_submission_id','¿Cuál es el nombre del niño/a?','fecha_dia','Municipio'] if c in _nin_sin_enc.columns]
+    _cols_mat = [c for c in ['_id','nombre','fecha_dia','Municipio','perfil'] if c in _mat_sin_enc.columns]
+
+    _total_sin_enc = len(_nin_sin_enc) + len(_mat_sin_enc)
+    if _total_sin_enc == 0:
+        st.success("✅ Todos los registros tienen encuestadora asignada.")
+    else:
+        st.warning(f"{_total_sin_enc} registro(s) sin encuestadora — diferencia entre 535 (dashboard) y los pivots.")
+        if not _nin_sin_enc.empty:
+            st.markdown(f"**Niños sin encuestadora ({len(_nin_sin_enc)})**")
+            st.dataframe(_nin_sin_enc[_cols_nin], use_container_width=True, hide_index=True)
+        if not _mat_sin_enc.empty:
+            st.markdown(f"**Maternas/responsables sin encuestadora ({len(_mat_sin_enc)})**")
+            st.dataframe(_mat_sin_enc[_cols_mat], use_container_width=True, hide_index=True)
+
     # Nota sobre registros sin fecha
-    _sin_fecha_n = _todos_enc_base['fecha_dia'].isna().sum() if '_todos_enc_base' in dir() else 0
+    _sin_fecha_n = _todos_enc_base['fecha_dia'].isna().sum() if not _todos_enc_base.empty else 0
     if _sin_fecha_n > 0:
-        st.caption(f"ℹ️ {_sin_fecha_n} registro(s) aparecen como 'Sin fecha' en los pivots porque el campo de fecha de inicio del formulario Kobo llegó vacío o en formato no reconocido en esa submisión. Se incluyen en el total de tamizados pero no se pueden asignar a una semana o día específico.")
+        st.caption(f"ℹ️ Además, {_sin_fecha_n} registro(s) tienen encuestadora pero no tienen fecha (campo `start` vacío en Kobo). Aparecen como 'Sin fecha' en los pivots.")
 
     st.markdown("---")
 
