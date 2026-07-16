@@ -49,10 +49,10 @@ EQUIPOS = [
     ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Marcelino",                 "Técnica Nutrición"),
     ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Geraldina Arriola",               "Promotora"),
     ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Pérez",                     "Promotora"),
-    ("San Salvador","Equipo 6 SS Centro",      "San Salvador Centro","Gaby Pino",                      "Técnica Nutrición"),
-    ("San Salvador","Equipo 6 SS Centro",      "San Salvador Centro","Claudia Patricia Mendez Guardado","Promotora"),
-    ("San Salvador","Equipo 7 SS Este",        "San Salvador Este",  "Brenda Nerio",                   "Técnica Nutrición"),
-    ("San Salvador","Equipo 7 SS Este",        "San Salvador Este",  "Rosibel Henríquez",              "Promotora"),
+    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Centro","Gaby Pino",                      "Técnica Nutrición"),
+    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Centro","Claudia Patricia Mendez Guardado","Promotora"),
+    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Brenda Nerio",                   "Técnica Nutrición"),
+    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Rosibel Henríquez",              "Promotora"),
     ("Coordinación","Coordinación",            "",                   "Trinidad Granados",               "Coordinadora"),
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
@@ -164,8 +164,9 @@ def unificar(df, dist_map, cant_map, us_map):
 
     # Normalización de nombres de encuestadoras (variantes en Kobo → nombre canónico)
     _ENC_ALIASES = {
-        'Brenda Nerios': 'Brenda Nerio',
-        'Fatima Gomez':  'Fátima Gómez',
+        'Brenda Nerios':   'Brenda Nerio',
+        'Fatima Gomez':    'Fátima Gómez',
+        'Rosibel Arriola': 'Rosibel Henríquez',
     }
     df['encuestador'] = df['encuestador'].replace(_ENC_ALIASES)
 
@@ -1993,44 +1994,66 @@ with tab_enc:
 
     st.markdown("---")
 
-    # ── NIÑOS TAMIZADOS POR ENCUESTADORA ─────────────────────────────────────
-    if not ninos.empty and 'encuestador' in ninos.columns:
-        st.markdown("**Niños tamizados por encuestadora**")
-        _ne = ninos.groupby('encuestador').size().reset_index(name='Niños tamizados').sort_values('Niños tamizados', ascending=False)
-        _ne_tot = pd.DataFrame([{'encuestador':'📊 TOTAL', 'Niños tamizados': _ne['Niños tamizados'].sum()}])
-        st.dataframe(pd.concat([_ne, _ne_tot], ignore_index=True), use_container_width=True, hide_index=True)
-        st.bar_chart(_ne.set_index('encuestador')['Niños tamizados'].sort_values())
+    # ── BASE COMBINADA: niños + maternas sin niños ────────────────────────────
+    # (sin doble conteo: las maternas con hijos ya están en ninos)
+    _ids_con_n = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
+    _mat_sn = df[~df['_id'].isin(_ids_con_n)][['encuestador','fecha_dia','semana']].copy() if '_id' in df.columns else pd.DataFrame()
+    _nin_cols = ninos[['encuestador','fecha_dia','semana']].copy() if not ninos.empty else pd.DataFrame()
+    _todos_tam = pd.concat([_nin_cols, _mat_sn], ignore_index=True)
+    _todos_tam = _todos_tam[_todos_tam['encuestador'].notna()].copy()
+
+    # ── TOTAL POR ENCUESTADORA (todos los tamizajes) ──────────────────────────
+    st.markdown("**Total tamizajes por encuestadora (niños + maternas)**")
+    if not _todos_tam.empty:
+        _ne_all = _todos_tam.groupby('encuestador').size().reset_index(name='Total tamizados').sort_values('Total tamizados', ascending=False)
+        _ne_all_tot = pd.DataFrame([{'encuestador':'📊 TOTAL', 'Total tamizados': _ne_all['Total tamizados'].sum()}])
+        st.dataframe(pd.concat([_ne_all, _ne_all_tot], ignore_index=True), use_container_width=True, hide_index=True)
+        st.bar_chart(_ne_all.set_index('encuestador')['Total tamizados'].sort_values())
 
     st.markdown("---")
 
     # ── ENCUESTAS POR DÍA Y ENCUESTADORA ─────────────────────────────────────
-    st.markdown("**Encuestas por día y encuestadora**")
-    pivot = df.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
-    if not pivot.empty:
-        pivot_w = pivot.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
-        pivot_w['TOTAL'] = pivot_w.sum(axis=1)
-        st.dataframe(pivot_w, use_container_width=True)
+    st.markdown("**Tamizajes por día y encuestadora (todos)**")
+    if not _todos_tam.empty:
+        _pivot_dia = _todos_tam.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
+        _pivot_dia_w = _pivot_dia.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
+        # Ordenar fechas cronológicamente
+        _pivot_dia_w = _pivot_dia_w.sort_index()
+        _pivot_dia_w['TOTAL'] = _pivot_dia_w.sum(axis=1)
+        # Fila de totales
+        _pivot_dia_w.loc['📊 TOTAL'] = _pivot_dia_w.sum()
+        st.dataframe(_pivot_dia_w, use_container_width=True)
 
     st.markdown("---")
 
-    # ── NIÑOS POR SEMANA Y ENCUESTADORA ──────────────────────────────────────
-    st.markdown("**Niños tamizados por semana y encuestadora**")
-    if not ninos.empty and 'semana' in ninos.columns and 'encuestador' in ninos.columns:
-        _sem_str = pd.to_datetime(ninos['semana'].astype(str), errors='coerce').dt.strftime('Sem %d/%m')
-        _ninos_sem = ninos.copy(); _ninos_sem['semana_str'] = _sem_str
-        _pivot_ns = _ninos_sem.groupby(['semana_str','encuestador']).size().reset_index(name='n')
+    # ── POR SEMANA Y ENCUESTADORA (todos) ────────────────────────────────────
+    st.markdown("**Tamizajes por semana y encuestadora (niños + maternas)**")
+    if not _todos_tam.empty and 'semana' in _todos_tam.columns:
+        # Semana como fecha real para ordenar correctamente
+        _todos_tam['semana_dt']  = pd.to_datetime(_todos_tam['semana'].astype(str), errors='coerce')
+        _todos_tam['semana_str'] = _todos_tam['semana_dt'].dt.strftime('Sem %d/%m')
+        # Orden cronológico de semanas
+        _sem_order = _todos_tam.dropna(subset=['semana_dt']).groupby('semana_str')['semana_dt'].min().sort_values().index.tolist()
+
+        _pivot_ns = _todos_tam.groupby(['semana_str','encuestador']).size().reset_index(name='n')
         _pivot_ns_w = _pivot_ns.pivot(index='encuestador', columns='semana_str', values='n').fillna(0).astype(int)
+        # Reordenar columnas cronológicamente
+        _sem_cols_ord = [c for c in _sem_order if c in _pivot_ns_w.columns]
+        _pivot_ns_w = _pivot_ns_w[_sem_cols_ord]
         _pivot_ns_w['Total'] = _pivot_ns_w.sum(axis=1)
         _pivot_ns_w = _pivot_ns_w.sort_values('Total', ascending=False)
+        # Fila de totales por columna
         _pivot_ns_w.loc['📊 TOTAL'] = _pivot_ns_w.sum()
         st.dataframe(_pivot_ns_w, use_container_width=True)
 
         # Gráfica evolución semanal por equipo
-        _ninos_sem['Equipo'] = _ninos_sem['encuestador'].map(_enc_eq_map['Equipo'])
-        _pivot_eq = _ninos_sem.dropna(subset=['Equipo']).groupby(['semana_str','Equipo']).size().reset_index(name='n')
+        _todos_tam['Equipo'] = _todos_tam['encuestador'].map(_enc_eq_map['Equipo'])
+        _pivot_eq = _todos_tam.dropna(subset=['Equipo']).groupby(['semana_str','Equipo']).size().reset_index(name='n')
         if not _pivot_eq.empty:
-            st.markdown("**Evolución semanal por equipo (niños)**")
-            st.bar_chart(_pivot_eq.pivot(index='semana_str', columns='Equipo', values='n').fillna(0))
+            _pivot_eq_w = _pivot_eq.pivot(index='semana_str', columns='Equipo', values='n').fillna(0)
+            _pivot_eq_w = _pivot_eq_w.reindex([c for c in _sem_order if c in _pivot_eq_w.index])
+            st.markdown("**Evolución semanal por equipo**")
+            st.bar_chart(_pivot_eq_w)
 
     st.markdown("---")
 
