@@ -165,9 +165,10 @@ def unificar(df, dist_map, cant_map, us_map):
 
     # Normalización de nombres de encuestadoras (variantes en Kobo → nombre canónico)
     _ENC_ALIASES = {
-        'Brenda Nerios':   'Brenda Nerio',
-        'Fatima Gomez':    'Fátima Gómez',
-        'Rosibel Arriola': 'Rosibel Henríquez',
+        'Brenda Nerios':    'Brenda Nerio',
+        'Fatima Gomez':     'Fátima Gómez',
+        'Rosibel Arriola':  'Rosibel Henríquez',
+        'Trinidad Granados':'Gaby Pino',   # Coordinadora → registro contabilizado en SS Centro
     }
     df['encuestador'] = df['encuestador'].replace(_ENC_ALIASES)
 
@@ -2030,23 +2031,46 @@ with tab_enc:
     st.markdown("**Métricas de rendimiento por encuestadora**")
     metricas = stats_enc(df)
     metricas = metricas.merge(
-        DF_EQUIPOS[['Nombre','Rol','Equipo','Región']],
+        DF_EQUIPOS[['Nombre','Rol','Equipo','Zona','Región']],
         left_on='Encuestador/a', right_on='Nombre', how='left'
     ).drop(columns=['Nombre'], errors='ignore')
-    col_orden = [c for c in ['Región','Equipo','Encuestador/a','Rol','Encuestas','Días campo',
+    col_orden = [c for c in ['Región','Equipo','Zona','Encuestador/a','Rol','Encuestas','Días campo',
                               'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
     _met_sorted = metricas[col_orden].sort_values(['Región','Equipo'], na_position='last')
     st.dataframe(_met_sorted, use_container_width=True, hide_index=True)
 
-    # Gráfica: encuestas por encuestadora
+    # Gráfica: encuestas por encuestadora, coloreada por zona
     if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
-        _chart_m = _met_sorted.dropna(subset=['Encuestas']).set_index('Encuestador/a')['Encuestas'].sort_values()
+        _ZONA_COLORES = {
+            'Usulután Este':       '#2ecc71',
+            'San Miguel Centro':   '#e74c3c',
+            'Santa Ana Centro':    '#f39c12',
+            'Ahuachapán Centro':   '#9b59b6',
+            'San Salvador Centro': '#3498db',
+            'San Salvador Este':   '#1abc9c',
+        }
+        _chart_m_df = (_met_sorted.dropna(subset=['Encuestas'])
+                       [['Encuestador/a','Encuestas','Zona']]
+                       .sort_values('Encuestas'))
+        _enc_colors = [_ZONA_COLORES.get(z, '#95a5a6') for z in _chart_m_df['Zona'].fillna('')]
         _fig_enc = go.Figure(go.Bar(
-            x=_chart_m.index.tolist(), y=_chart_m.values.tolist(),
-            marker_color='#e67e22',
-            text=_chart_m.values.tolist(), textposition='outside'
+            x=_chart_m_df['Encuestador/a'].tolist(),
+            y=_chart_m_df['Encuestas'].tolist(),
+            marker_color=_enc_colors,
+            text=_chart_m_df['Encuestas'].tolist(), textposition='outside',
+            customdata=_chart_m_df['Zona'].fillna('Sin zona').tolist(),
+            hovertemplate='<b>%{x}</b><br>Encuestas: %{y}<br>Zona: %{customdata}<extra></extra>'
         ))
-        _fig_enc.update_layout(margin=dict(t=40, b=20), height=340, yaxis_title='Encuestas')
+        # Leyenda manual por zona
+        for _zona, _color in _ZONA_COLORES.items():
+            if _zona in _chart_m_df['Zona'].values:
+                _fig_enc.add_trace(go.Bar(x=[None], y=[None], name=_zona, marker_color=_color))
+        _fig_enc.update_layout(
+            margin=dict(t=40, b=80), height=380, yaxis_title='Encuestas',
+            xaxis_tickangle=-30, plot_bgcolor='white',
+            yaxis=dict(showgrid=True, gridcolor='#e8e8e8'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0)
+        )
         st.plotly_chart(_fig_enc, use_container_width=True)
 
     enc_datos  = set(df['encuestador'].dropna().astype(str).unique())
