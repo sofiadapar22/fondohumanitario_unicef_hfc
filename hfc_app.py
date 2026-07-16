@@ -1935,15 +1935,22 @@ with tab_enc:
             use_container_width=True, hide_index=True
         )
 
-        # Gráfica: tamizados vs meta por equipo
+        # Gráfica: tamizados vs meta por equipo (agrupa zonas del mismo equipo)
         st.markdown("**📊 Avance vs Meta por equipo**")
-        _chart_eq = _resumen_eq_meta.set_index('Equipo')[['Tamizados','Pendientes']].sort_values('Tamizados', ascending=True)
+        _chart_eq_agg = _resumen_eq_meta.groupby('Equipo', as_index=False).agg(
+            Tamizados=('Tamizados','sum'), Meta=('Meta','sum'), Pendientes=('Pendientes','sum')
+        ).sort_values('Tamizados')
         _fig_eq = go.Figure()
-        _fig_eq.add_trace(go.Bar(name='Tamizados', x=_chart_eq.index.tolist(), y=_chart_eq['Tamizados'].tolist(),
-                                  marker_color='#2ecc71', text=_chart_eq['Tamizados'].tolist(), textposition='outside'))
-        _fig_eq.add_trace(go.Bar(name='Pendientes', x=_chart_eq.index.tolist(), y=_chart_eq['Pendientes'].tolist(),
-                                  marker_color='#e74c3c', text=_chart_eq['Pendientes'].tolist(), textposition='outside'))
-        _fig_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=350, yaxis_title='Personas')
+        _fig_eq.add_trace(go.Bar(
+            name='Tamizados', x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Tamizados'].tolist(),
+            marker_color='#2ecc71', text=_chart_eq_agg['Tamizados'].tolist(), textposition='outside'
+        ))
+        _fig_eq.add_trace(go.Bar(
+            name='Pendientes', x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Pendientes'].tolist(),
+            marker_color='#e74c3c', text=_chart_eq_agg['Pendientes'].tolist(), textposition='outside'
+        ))
+        _fig_eq.update_layout(barmode='group', margin=dict(t=40, b=60), height=380,
+                               yaxis_title='Personas', xaxis_tickangle=-20)
         st.plotly_chart(_fig_eq, use_container_width=True)
 
         # Gráfica: promedio diario por equipo
@@ -1971,13 +1978,22 @@ with tab_enc:
                 _diario_eq['fecha_dia'] = _diario_eq['fecha_dia'].astype(str)
                 with _cols_eq[_i % 2]:
                     st.markdown(f"**{_eq}**")
-                    _fig_deq = go.Figure(go.Bar(
-                        x=_diario_eq['fecha_dia'].tolist(), y=_diario_eq['Tamizados'].tolist(),
-                        marker_color='#9b59b6',
-                        text=_diario_eq['Tamizados'].tolist(), textposition='outside'
+                    _fig_deq = go.Figure(go.Scatter(
+                        x=_diario_eq['fecha_dia'].tolist(),
+                        y=_diario_eq['Tamizados'].tolist(),
+                        mode='lines+markers+text',
+                        line=dict(color='#9b59b6', width=2),
+                        marker=dict(size=7),
+                        text=_diario_eq['Tamizados'].tolist(),
+                        textposition='top center',
+                        textfont=dict(size=11)
                     ))
-                    _fig_deq.update_layout(margin=dict(t=20, b=20, l=10, r=10), height=220,
-                                           xaxis_tickangle=-45, showlegend=False)
+                    _fig_deq.update_layout(
+                        margin=dict(t=30, b=30, l=10, r=10), height=220,
+                        xaxis=dict(tickangle=-45, tickformat='%d/%m'),
+                        yaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
+                        plot_bgcolor='white', showlegend=False
+                    )
                     st.plotly_chart(_fig_deq, use_container_width=True)
     else:
         st.info("Sin datos suficientes para resumen por equipo.")
@@ -2025,7 +2041,7 @@ with tab_enc:
     _mat_sn = df[~df['_id'].isin(_ids_con_n)][['encuestador','fecha_dia','semana']].copy() if '_id' in df.columns else pd.DataFrame()
     _nin_cols = ninos[['encuestador','fecha_dia','semana']].copy() if not ninos.empty else pd.DataFrame()
     _todos_tam = pd.concat([_nin_cols, _mat_sn], ignore_index=True)
-    _todos_tam = _todos_tam[_todos_tam['encuestador'].notna()].copy()
+    # NO filtramos por encuestador.notna() para que el total cuadre con el dashboard
 
     # ── TOTAL POR ENCUESTADORA (todos los tamizajes) ──────────────────────────
     st.markdown("**Total tamizajes por encuestadora (niños + maternas)**")
