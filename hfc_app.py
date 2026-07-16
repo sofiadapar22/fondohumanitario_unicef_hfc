@@ -1388,13 +1388,14 @@ with tab_escenarios:
     st.markdown("### 🎯 Cálculo de Meta Semanal")
     _fecha_inicio_of = date(2026, 5, 29)
     _hoy_ms          = date.today()
-    _dias_trab       = max((_hoy_ms - _fecha_inicio_of).days, 1)
+    # Solo días laborales (lunes a viernes)
+    _dias_trab       = max(int(np.busday_count(_fecha_inicio_of, _hoy_ms)), 1)
     _n_equipos_ms    = 7   # equipos de campo activos (sin coordinación)
     _logrados_ms     = total_tamizados   # niños + maternas sin niños
     _faltantes_ms    = max(META_TAMIZAJE - _logrados_ms, 0)
     _ritmo_real_ms   = round(_logrados_ms / _dias_trab)
-    _ritmo_real_sem  = _ritmo_real_ms * 5   # 5 días campo/semana aprox
-    _dias_c1_ms      = max((FECHA_C1 - _hoy_ms).days, 1)
+    _ritmo_real_sem  = _ritmo_real_ms * 5   # 5 días laborales/semana
+    _dias_c1_ms      = max(int(np.busday_count(_hoy_ms, FECHA_C1)), 1)
     _semanas_rest    = max(_dias_c1_ms / 5, 1)
     _ritmo_opt_sem   = round(_faltantes_ms / _semanas_rest) if _semanas_rest > 0 else _faltantes_ms
     _ritmo_opt_eq    = round(_ritmo_opt_sem / _n_equipos_ms) if _n_equipos_ms > 0 else _ritmo_opt_sem
@@ -1986,6 +1987,19 @@ with tab_enc:
         if not ninos.empty and 'fecha_dia' in ninos.columns and 'encuestador' in ninos.columns:
             _ninos_eq = ninos.copy()
             _ninos_eq['Equipo'] = _ninos_eq['encuestador'].map(_enc_equipo['Equipo'])
+
+            # Filtro por semana
+            if 'semana' in _ninos_eq.columns:
+                _ninos_eq['semana_dt']  = pd.to_datetime(_ninos_eq['semana'].astype(str), errors='coerce')
+                _ninos_eq['semana_str'] = _ninos_eq['semana_dt'].dt.strftime('Sem %d/%m/%Y')
+                _ninos_eq['semana_str'] = _ninos_eq['semana_str'].fillna('Sin fecha')
+                _sems_disp = ['Todas'] + sorted(
+                    [s for s in _ninos_eq['semana_str'].unique() if s != 'Sin fecha']
+                ) + (['Sin fecha'] if 'Sin fecha' in _ninos_eq['semana_str'].values else [])
+                _sem_sel_eq = st.selectbox("Filtrar por semana", _sems_disp, key='sem_eq_diario')
+                if _sem_sel_eq != 'Todas':
+                    _ninos_eq = _ninos_eq[_ninos_eq['semana_str'] == _sem_sel_eq]
+
             _equipos_activos = sorted(_ninos_eq['Equipo'].dropna().unique())
             # 2 columnas
             _cols_eq = st.columns(2)
@@ -1994,21 +2008,19 @@ with tab_enc:
                 _diario_eq = _subset.groupby('fecha_dia').size().reset_index(name='Tamizados')
                 _diario_eq['fecha_dia'] = _diario_eq['fecha_dia'].astype(str)
                 with _cols_eq[_i % 2]:
-                    st.markdown(f"**{_eq}**")
-                    _fig_deq = go.Figure(go.Scatter(
+                    _fig_deq = go.Figure(go.Bar(
                         x=_diario_eq['fecha_dia'].tolist(),
                         y=_diario_eq['Tamizados'].tolist(),
-                        mode='lines+markers+text',
-                        line=dict(color='#9b59b6', width=2),
-                        marker=dict(size=7),
+                        marker_color='#4472C4',
                         text=_diario_eq['Tamizados'].tolist(),
-                        textposition='top center',
+                        textposition='outside',
                         textfont=dict(size=11)
                     ))
                     _fig_deq.update_layout(
-                        margin=dict(t=30, b=30, l=10, r=10), height=220,
-                        xaxis=dict(tickangle=-45, tickformat='%d/%m'),
-                        yaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
+                        title=dict(text=_eq, font=dict(size=13)),
+                        margin=dict(t=40, b=50, l=30, r=10), height=280,
+                        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+                        yaxis=dict(showgrid=True, gridcolor='#e8e8e8', zeroline=False),
                         plot_bgcolor='white', showlegend=False
                     )
                     st.plotly_chart(_fig_deq, use_container_width=True)
