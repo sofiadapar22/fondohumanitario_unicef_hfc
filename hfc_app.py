@@ -1901,38 +1901,40 @@ with tab_enc:
         # Mapa encuestador → equipo y zona
         _enc_equipo = DF_EQUIPOS[['Nombre','Equipo','Zona','Región']].drop_duplicates('Nombre').set_index('Nombre')
 
-        # Tamizajes de niños por encuestador
-        _ninos_enc = ninos.groupby('encuestador').agg(
+        # Base combinada: niños + maternas sin niños (sin doble conteo) por encuestador
+        _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
+        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia']].copy() if '_id' in df.columns else pd.DataFrame()
+        _nin_enc_base = ninos[['encuestador','fecha_dia']].copy()
+        _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
+
+        _todos_enc = _todos_enc_base.groupby('encuestador').agg(
             Tamizados=('encuestador','count'),
             Dias_campo=('fecha_dia', pd.Series.nunique)
         ).reset_index()
-        _ninos_enc['Equipo']  = _ninos_enc['encuestador'].map(_enc_equipo['Equipo'])
-        _ninos_enc['Región']  = _ninos_enc['encuestador'].map(_enc_equipo['Región'])
-        _ninos_enc['Zona']    = _ninos_enc['encuestador'].map(_enc_equipo['Zona'])
+        _todos_enc['Equipo'] = _todos_enc['encuestador'].map(_enc_equipo['Equipo'])
+        _todos_enc['Región'] = _todos_enc['encuestador'].map(_enc_equipo['Región'])
+        _todos_enc['Zona']   = _todos_enc['encuestador'].map(_enc_equipo['Zona'])
 
-        # Para días de campo por equipo: días ÚNICOS donde cualquier miembro del equipo trabajó
-        _ninos_with_equipo = ninos.copy()
-        _ninos_with_equipo['Equipo'] = _ninos_with_equipo['encuestador'].map(_enc_equipo['Equipo'])
+        # Para días de campo por equipo: días ÚNICOS donde cualquier miembro trabajó
+        _todos_with_eq = _todos_enc_base.copy()
+        _todos_with_eq['Equipo'] = _todos_with_eq['encuestador'].map(_enc_equipo['Equipo'])
         _dias_por_equipo = (
-            _ninos_with_equipo.dropna(subset=['Equipo','fecha_dia'])
+            _todos_with_eq.dropna(subset=['Equipo','fecha_dia'])
             .groupby('Equipo')['fecha_dia'].nunique()
             .reset_index(name='Días campo equipo')
         )
 
-        # Agrupar por equipo (nivel detalle)
-        _resumen_equipo = _ninos_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona']).agg(
+        # Agrupar por equipo (nivel detalle) — tamizados = niños + maternas
+        _resumen_equipo = _todos_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona']).agg(
             Tamizados=('Tamizados','sum')
         ).reset_index()
         _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
         _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo']).round(1)
 
-        # Días únicos con actividad (cualquier equipo) — para promedio global consistente
-        _dias_globales = ninos['fecha_dia'].nunique() if 'fecha_dia' in ninos.columns else 1
-        # Total tamizados = niños + maternas sin niños (igual que el dashboard principal)
-        _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
-        _mat_sin_ninos = len(df[~df['_id'].isin(_ids_con_ninos_enc)]) if '_id' in df.columns else 0
-        _total_global = len(ninos) + _mat_sin_ninos
-        _prom_global  = _total_global / _dias_globales if _dias_globales > 0 else 0
+        # Días únicos globales
+        _dias_globales = _todos_enc_base['fecha_dia'].nunique()
+        _total_global  = len(_todos_enc_base)
+        _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
 
         # KPIs rápidos
         _col1, _col2, _col3 = st.columns(3)
@@ -1941,10 +1943,21 @@ with tab_enc:
                      help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
         _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
 
-        # Tabla por equipo — solo avance, sin metas
+        # Tabla por equipo con fila TOTAL (días no se suman — son días únicos por equipo)
+        _res_eq_display = _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']].sort_values('Tamizados', ascending=False).copy()
+        _tot_eq = pd.DataFrame([{
+            'Región': '', 'Equipo': '📊 TOTAL', 'Zona': '',
+            'Tamizados': int(_res_eq_display['Tamizados'].sum()),
+            'Días campo equipo': '—',
+            'Prom./día': ''
+        }])
         st.dataframe(
-            _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']]
-            .sort_values('Tamizados', ascending=False),
+            pd.concat([_res_eq_display, _tot_eq], ignore_index=True),
+            column_config={
+                'Tamizados':         st.column_config.NumberColumn('Tamizados', help='Niños + maternas sin niños (sin doble conteo)'),
+                'Días campo equipo': st.column_config.TextColumn('Días campo equipo', help='Días únicos con actividad del equipo. No se suma porque cada equipo puede coincidir en el mismo día.'),
+                'Prom./día':         st.column_config.NumberColumn('Prom./día', help='Tamizados ÷ días de campo del equipo'),
+            },
             use_container_width=True, hide_index=True
         )
         # Para la gráfica mantenemos el mismo dataframe
@@ -2024,8 +2037,6 @@ with tab_enc:
     st.markdown("---")
 
     _enc_eq_map = DF_EQUIPOS[['Nombre','Equipo','Zona','Región','Rol']].drop_duplicates('Nombre').set_index('Nombre')
-    # Niños tamizados por encuestadora (sin doble conteo)
-    _ids_con_n = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
 
     # ── MÉTRICAS DE RENDIMIENTO ───────────────────────────────────────────────
     st.markdown("**Métricas de rendimiento por encuestadora**")
@@ -2034,18 +2045,36 @@ with tab_enc:
         DF_EQUIPOS[['Nombre','Rol','Equipo','Zona','Región']],
         left_on='Encuestador/a', right_on='Nombre', how='left'
     ).drop(columns=['Nombre'], errors='ignore')
-    col_orden = [c for c in ['Región','Equipo','Zona','Encuestador/a','Rol','Encuestas','Días campo',
+
+    # Agregar columna Tamizados (niños + maternas sin niños por encuestadora)
+    _tam_por_enc = _todos_enc_base.groupby('encuestador').size().reset_index(name='Tamizados')
+    metricas = metricas.merge(_tam_por_enc, left_on='Encuestador/a', right_on='encuestador', how='left').drop(columns=['encuestador'], errors='ignore')
+
+    col_orden = [c for c in ['Región','Equipo','Zona','Encuestador/a','Rol','Encuestas','Tamizados','Días campo',
                               'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
     _met_sorted = metricas[col_orden].sort_values(['Región','Equipo'], na_position='last')
-    # Fila de totales
+
+    # Fila TOTAL — Días campo NO se suma (no tiene sentido sumar días individuales)
     _met_tot = {c: '' for c in col_orden}
     _met_tot['Encuestador/a'] = '📊 TOTAL'
-    if 'Encuestas' in col_orden:
-        _met_tot['Encuestas'] = int(_met_sorted['Encuestas'].sum())
-    if 'Días campo' in col_orden:
-        _met_tot['Días campo'] = int(_met_sorted['Días campo'].sum())
+    if 'Encuestas'  in col_orden: _met_tot['Encuestas']  = int(_met_sorted['Encuestas'].sum())
+    if 'Tamizados'  in col_orden: _met_tot['Tamizados']  = int(_met_sorted['Tamizados'].fillna(0).sum())
+    if 'Días campo' in col_orden: _met_tot['Días campo'] = '—'
+
     _met_sorted_display = pd.concat([_met_sorted, pd.DataFrame([_met_tot])], ignore_index=True)
-    st.dataframe(_met_sorted_display, use_container_width=True, hide_index=True)
+    st.dataframe(
+        _met_sorted_display,
+        column_config={
+            'Encuestas':        st.column_config.NumberColumn('Encuestas', help='Formularios enviados en Kobo (una encuesta = una madre/responsable entrevistada)'),
+            'Tamizados':        st.column_config.NumberColumn('Tamizados', help='Niños + maternas sin niños. Sin doble conteo: si la madre tiene hijos registrados, solo se cuentan los niños.'),
+            'Días campo':       st.column_config.TextColumn('Días campo', help='Días únicos con al menos una encuesta. No se suma en el total porque los días se solapan entre encuestadoras.'),
+            'Dur. mediana (min)': st.column_config.NumberColumn('Dur. mediana (min)', help='Duración mediana de la encuesta en minutos'),
+            '% < 5 min':        st.column_config.NumberColumn('% < 5 min', help='% de encuestas completadas en menos de 5 minutos (posible error de calidad)'),
+            '% > 90 min':       st.column_config.NumberColumn('% > 90 min', help='% de encuestas que tomaron más de 90 minutos'),
+            'Enc./día':         st.column_config.NumberColumn('Enc./día', help='Encuestas promedio por día de campo'),
+        },
+        use_container_width=True, hide_index=True
+    )
 
     # Gráfica: encuestas por encuestadora, coloreada por zona
     if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
@@ -2173,6 +2202,11 @@ with tab_enc:
                 ))
             _fig_sem_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=380, yaxis_title='Tamizados')
             st.plotly_chart(_fig_sem_eq, use_container_width=True)
+
+    # Nota sobre registros sin fecha
+    _sin_fecha_n = _todos_enc_base['fecha_dia'].isna().sum() if '_todos_enc_base' in dir() else 0
+    if _sin_fecha_n > 0:
+        st.caption(f"ℹ️ {_sin_fecha_n} registro(s) aparecen como 'Sin fecha' en los pivots porque el campo de fecha de inicio del formulario Kobo llegó vacío o en formato no reconocido en esa submisión. Se incluyen en el total de tamizados pero no se pueden asignar a una semana o día específico.")
 
     st.markdown("---")
 
