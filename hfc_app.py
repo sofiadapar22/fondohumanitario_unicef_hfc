@@ -2037,7 +2037,15 @@ with tab_enc:
     col_orden = [c for c in ['Región','Equipo','Zona','Encuestador/a','Rol','Encuestas','Días campo',
                               'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
     _met_sorted = metricas[col_orden].sort_values(['Región','Equipo'], na_position='last')
-    st.dataframe(_met_sorted, use_container_width=True, hide_index=True)
+    # Fila de totales
+    _met_tot = {c: '' for c in col_orden}
+    _met_tot['Encuestador/a'] = '📊 TOTAL'
+    if 'Encuestas' in col_orden:
+        _met_tot['Encuestas'] = int(_met_sorted['Encuestas'].sum())
+    if 'Días campo' in col_orden:
+        _met_tot['Días campo'] = int(_met_sorted['Días campo'].sum())
+    _met_sorted_display = pd.concat([_met_sorted, pd.DataFrame([_met_tot])], ignore_index=True)
+    st.dataframe(_met_sorted_display, use_container_width=True, hide_index=True)
 
     # Gráfica: encuestas por encuestadora, coloreada por zona
     if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
