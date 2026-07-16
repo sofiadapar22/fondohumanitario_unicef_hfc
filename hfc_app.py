@@ -53,7 +53,7 @@ EQUIPOS = [
     ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Centro","Claudia Patricia Mendez Guardado","Promotora"),
     ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Brenda Nerio",                   "Técnica Nutrición"),
     ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Rosibel Henríquez",              "Promotora"),
-    ("Coordinación","Coordinación",            "",                   "Trinidad Granados",               "Coordinadora"),
+    # Trinidad Granados — Coordinadora (excluida de métricas de campo)
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
 
@@ -2015,12 +2015,15 @@ with tab_enc:
     # ── ENCUESTAS POR DÍA Y ENCUESTADORA ─────────────────────────────────────
     st.markdown("**Tamizajes por día y encuestadora (todos)**")
     if not _todos_tam.empty:
-        _pivot_dia = _todos_tam.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
+        _todos_tam_dia = _todos_tam.copy()
+        _todos_tam_dia['fecha_dia'] = _todos_tam_dia['fecha_dia'].fillna('Sin fecha')
+        _pivot_dia = _todos_tam_dia.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
         _pivot_dia_w = _pivot_dia.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
-        # Ordenar fechas cronológicamente
-        _pivot_dia_w = _pivot_dia_w.sort_index()
+        # Ordenar fechas cronológicamente (Sin fecha al final)
+        _idx_fechas = sorted([i for i in _pivot_dia_w.index if i != 'Sin fecha'])
+        if 'Sin fecha' in _pivot_dia_w.index: _idx_fechas.append('Sin fecha')
+        _pivot_dia_w = _pivot_dia_w.reindex(_idx_fechas)
         _pivot_dia_w['TOTAL'] = _pivot_dia_w.sum(axis=1)
-        # Fila de totales
         _pivot_dia_w.loc['📊 TOTAL'] = _pivot_dia_w.sum()
         st.dataframe(_pivot_dia_w, use_container_width=True)
 
@@ -2032,8 +2035,12 @@ with tab_enc:
         # Semana como fecha real para ordenar correctamente
         _todos_tam['semana_dt']  = pd.to_datetime(_todos_tam['semana'].astype(str), errors='coerce')
         _todos_tam['semana_str'] = _todos_tam['semana_dt'].dt.strftime('Sem %d/%m')
-        # Orden cronológico de semanas
-        _sem_order = _todos_tam.dropna(subset=['semana_dt']).groupby('semana_str')['semana_dt'].min().sort_values().index.tolist()
+        # Registros sin fecha válida → "Sin fecha" para no perderlos del total
+        _todos_tam['semana_str'] = _todos_tam['semana_str'].fillna('Sin fecha')
+        # Orden cronológico de semanas (Sin fecha al final)
+        _sem_order = _todos_tam[_todos_tam['semana_str'] != 'Sin fecha'].groupby('semana_str')['semana_dt'].min().sort_values().index.tolist()
+        if 'Sin fecha' in _todos_tam['semana_str'].values:
+            _sem_order.append('Sin fecha')
 
         _pivot_ns = _todos_tam.groupby(['semana_str','encuestador']).size().reset_index(name='n')
         _pivot_ns_w = _pivot_ns.pivot(index='encuestador', columns='semana_str', values='n').fillna(0).astype(int)
