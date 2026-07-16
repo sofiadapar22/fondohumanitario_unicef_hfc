@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import io, os, pathlib
 from datetime import date, timedelta
+import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -1937,13 +1938,24 @@ with tab_enc:
         # Gráfica: tamizados vs meta por equipo
         st.markdown("**📊 Avance vs Meta por equipo**")
         _chart_eq = _resumen_eq_meta.set_index('Equipo')[['Tamizados','Pendientes']].sort_values('Tamizados', ascending=True)
-        st.bar_chart(_chart_eq, color=['#2ecc71','#e74c3c'])
-        st.caption("🟢 Tamizados  🔴 Pendientes")
+        _fig_eq = go.Figure()
+        _fig_eq.add_trace(go.Bar(name='Tamizados', x=_chart_eq.index.tolist(), y=_chart_eq['Tamizados'].tolist(),
+                                  marker_color='#2ecc71', text=_chart_eq['Tamizados'].tolist(), textposition='outside'))
+        _fig_eq.add_trace(go.Bar(name='Pendientes', x=_chart_eq.index.tolist(), y=_chart_eq['Pendientes'].tolist(),
+                                  marker_color='#e74c3c', text=_chart_eq['Pendientes'].tolist(), textposition='outside'))
+        _fig_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=350, yaxis_title='Personas')
+        st.plotly_chart(_fig_eq, use_container_width=True)
 
         # Gráfica: promedio diario por equipo
         st.markdown("**⚡ Promedio diario por equipo**")
         _chart_prom = _resumen_eq_meta.dropna(subset=['Prom./día']).set_index('Equipo')['Prom./día'].sort_values()
-        st.bar_chart(_chart_prom)
+        _fig_prom = go.Figure(go.Bar(
+            x=_chart_prom.index.tolist(), y=_chart_prom.values.tolist(),
+            marker_color='#3498db',
+            text=[f"{v:.1f}" for v in _chart_prom.values], textposition='outside'
+        ))
+        _fig_prom.update_layout(margin=dict(t=40, b=20), height=320, yaxis_title='Tamizajes/día')
+        st.plotly_chart(_fig_prom, use_container_width=True)
 
         # Gráficas de avance diario por equipo (una por equipo)
         st.markdown("**📅 Avance diario por equipo**")
@@ -1959,7 +1971,14 @@ with tab_enc:
                 _diario_eq['fecha_dia'] = _diario_eq['fecha_dia'].astype(str)
                 with _cols_eq[_i % 2]:
                     st.markdown(f"**{_eq}**")
-                    st.bar_chart(_diario_eq.set_index('fecha_dia')['Tamizados'], height=220)
+                    _fig_deq = go.Figure(go.Bar(
+                        x=_diario_eq['fecha_dia'].tolist(), y=_diario_eq['Tamizados'].tolist(),
+                        marker_color='#9b59b6',
+                        text=_diario_eq['Tamizados'].tolist(), textposition='outside'
+                    ))
+                    _fig_deq.update_layout(margin=dict(t=20, b=20, l=10, r=10), height=220,
+                                           xaxis_tickangle=-45, showlegend=False)
+                    st.plotly_chart(_fig_deq, use_container_width=True)
     else:
         st.info("Sin datos suficientes para resumen por equipo.")
 
@@ -1984,7 +2003,13 @@ with tab_enc:
     # Gráfica: encuestas por encuestadora
     if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
         _chart_m = _met_sorted.dropna(subset=['Encuestas']).set_index('Encuestador/a')['Encuestas'].sort_values()
-        st.bar_chart(_chart_m)
+        _fig_enc = go.Figure(go.Bar(
+            x=_chart_m.index.tolist(), y=_chart_m.values.tolist(),
+            marker_color='#e67e22',
+            text=_chart_m.values.tolist(), textposition='outside'
+        ))
+        _fig_enc.update_layout(margin=dict(t=40, b=20), height=340, yaxis_title='Encuestas')
+        st.plotly_chart(_fig_enc, use_container_width=True)
 
     enc_datos  = set(df['encuestador'].dropna().astype(str).unique())
     enc_plan   = set(DF_EQUIPOS['Nombre'].unique())
@@ -2008,7 +2033,14 @@ with tab_enc:
         _ne_all = _todos_tam.groupby('encuestador').size().reset_index(name='Total tamizados').sort_values('Total tamizados', ascending=False)
         _ne_all_tot = pd.DataFrame([{'encuestador':'📊 TOTAL', 'Total tamizados': _ne_all['Total tamizados'].sum()}])
         st.dataframe(pd.concat([_ne_all, _ne_all_tot], ignore_index=True), use_container_width=True, hide_index=True)
-        st.bar_chart(_ne_all.set_index('encuestador')['Total tamizados'].sort_values())
+        _ne_sorted = _ne_all.set_index('encuestador')['Total tamizados'].sort_values()
+        _fig_ne = go.Figure(go.Bar(
+            x=_ne_sorted.index.tolist(), y=_ne_sorted.values.tolist(),
+            marker_color='#1abc9c',
+            text=_ne_sorted.values.tolist(), textposition='outside'
+        ))
+        _fig_ne.update_layout(margin=dict(t=40, b=20), height=350, yaxis_title='Total tamizados')
+        st.plotly_chart(_fig_ne, use_container_width=True)
 
     st.markdown("---")
 
@@ -2060,7 +2092,17 @@ with tab_enc:
             _pivot_eq_w = _pivot_eq.pivot(index='semana_str', columns='Equipo', values='n').fillna(0)
             _pivot_eq_w = _pivot_eq_w.reindex([c for c in _sem_order if c in _pivot_eq_w.index])
             st.markdown("**Evolución semanal por equipo**")
-            st.bar_chart(_pivot_eq_w)
+            _fig_sem_eq = go.Figure()
+            for _eq_col in _pivot_eq_w.columns:
+                _vals = _pivot_eq_w[_eq_col].tolist()
+                _fig_sem_eq.add_trace(go.Bar(
+                    name=_eq_col,
+                    x=_pivot_eq_w.index.tolist(),
+                    y=_vals,
+                    text=_vals, textposition='outside'
+                ))
+            _fig_sem_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=380, yaxis_title='Tamizados')
+            st.plotly_chart(_fig_sem_eq, use_container_width=True)
 
     st.markdown("---")
 
