@@ -1398,7 +1398,8 @@ with tab_escenarios:
     _dias_c1_ms      = max(int(np.busday_count(_hoy_ms, FECHA_C1)), 1)
     _semanas_rest    = max(_dias_c1_ms / 5, 1)
     _ritmo_opt_sem   = round(_faltantes_ms / _semanas_rest) if _semanas_rest > 0 else _faltantes_ms
-    _ritmo_opt_eq    = round(_ritmo_opt_sem / _n_equipos_ms) if _n_equipos_ms > 0 else _ritmo_opt_sem
+    _ritmo_opt_eq    = round(_ritmo_opt_sem / _n_equipos_ms) if _n_equipos_ms > 0 else _ritmo_opt_sem  # por equipo/semana
+    _ritmo_opt_eq_dia = round(_ritmo_opt_eq / 5)  # por equipo/día (÷ 5 días laborales)
     _ritmo_esp_sem   = round(META_TAMIZAJE / ((_hoy_ms - _fecha_inicio_of + timedelta(days=_dias_c1_ms)).days / 5))
     _diferencia      = _ritmo_real_sem - _ritmo_esp_sem
     _fecha_opt       = _hoy_ms + timedelta(days=int(_faltantes_ms / _ritmo_real_ms)) if _ritmo_real_ms > 0 else None
@@ -1432,26 +1433,41 @@ with tab_escenarios:
                 'N° equipos de campo', 'Semanas restantes C1',
                 'Ritmo esperado semanal', 'Ritmo real semanal', 'Diferencia',
                 'Personas faltantes',
-                'Ritmo óptimo SEMANAL actualizado',
-                f'Por equipo/día ({_n_equipos_ms} equipos)',
+                'Ritmo óptimo SEMANAL (todo el equipo)',
+                f'Por equipo/semana ({_n_equipos_ms} equipos)',
+                f'Por equipo/día ({_n_equipos_ms} equipos × 5 días)',
             ],
             'Valor': [
                 str(_n_equipos_ms), f"{_semanas_rest:.1f}",
-                f"{_ritmo_esp_sem}", f"{_ritmo_real_sem}",
+                f"{_ritmo_esp_sem:,}/semana", f"{_ritmo_real_sem:,}/semana",
                 f"{_diferencia:+d} {'✅' if _diferencia >= 0 else '⚠️'}",
                 f"{_faltantes_ms:,}",
                 f"{_ritmo_opt_sem:,}/semana",
-                f"{_ritmo_opt_eq}/día por equipo",
+                f"{_ritmo_opt_eq:,}/semana por equipo",
+                f"{_ritmo_opt_eq_dia}/día por equipo",
             ]
         }
         st.dataframe(pd.DataFrame(_tabla_opt), use_container_width=True, hide_index=True)
 
-        # Gráfica ritmo real vs esperado
-        _chart_ritmo = pd.DataFrame({
-            'Ritmo real semanal':    [_ritmo_real_sem],
-            'Ritmo esperado semanal':[_ritmo_esp_sem],
-        })
-        st.bar_chart(_chart_ritmo.T.rename(columns={0:'Tamizajes/semana'}))
+        # Gráfica ritmo: real vs esperado vs meta óptima — con data labels
+        _fig_ritmo = go.Figure()
+        _ritmo_labels = ['Ritmo real\nsemanal', 'Ritmo esperado\nsemanal', 'Meta óptima\nsemanal']
+        _ritmo_values = [_ritmo_real_sem, _ritmo_esp_sem, _ritmo_opt_sem]
+        _ritmo_colors = ['#2ecc71', '#3498db', '#e74c3c']
+        _fig_ritmo.add_trace(go.Bar(
+            x=_ritmo_labels, y=_ritmo_values,
+            marker_color=_ritmo_colors,
+            text=_ritmo_values, textposition='outside',
+            textfont=dict(size=13)
+        ))
+        _fig_ritmo.update_layout(
+            margin=dict(t=40, b=20), height=320,
+            yaxis_title='Tamizajes/semana',
+            plot_bgcolor='white',
+            yaxis=dict(showgrid=True, gridcolor='#e8e8e8'),
+            showlegend=False
+        )
+        st.plotly_chart(_fig_ritmo, use_container_width=True)
 
     st.markdown("---")
 
