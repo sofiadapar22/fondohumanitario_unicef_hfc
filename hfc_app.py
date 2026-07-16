@@ -164,6 +164,13 @@ def unificar(df, dist_map, cant_map, us_map):
     df['nombre']      = df['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
     df['encuestador'] = df['encuestador'].astype(str).str.strip().replace('nan', pd.NA)
 
+    # Normalización de nombres de encuestadoras (variantes en Kobo → nombre canónico)
+    _ENC_ALIASES = {
+        'Brenda Nerios': 'Brenda Nerio',
+        'Fatima Gomez':  'Fátima Gómez',
+    }
+    df['encuestador'] = df['encuestador'].replace(_ENC_ALIASES)
+
     df['start']     = pd.to_datetime(df['start'],    errors='coerce')
     df['end']       = pd.to_datetime(df['end'],      errors='coerce')
     df['fecha_ent'] = pd.to_datetime(df['fecha_ent'],errors='coerce')
@@ -1856,108 +1863,12 @@ with tab_enc:
 
     st.markdown("---")
 
-    # ── Preparar base combinada (niños + maternas) por encuestadora ──────────
     _enc_eq_map = DF_EQUIPOS[['Nombre','Equipo','Zona','Región','Rol']].drop_duplicates('Nombre').set_index('Nombre')
-    _ids_con_n  = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
+    # Niños tamizados por encuestadora (sin doble conteo)
+    _ids_con_n = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
 
-    # Maternas: una fila por entrevista (todas)
-    _df_enc = df[['encuestador','fecha_dia','semana','Municipio','_id']].copy() if not df.empty else pd.DataFrame()
-    if not _df_enc.empty:
-        _df_enc['tipo'] = 'Materna'
-        _df_enc['_kid'] = _df_enc['_id'].astype(str)
-
-    # Niños: una fila por niño
-    _nin_enc = ninos[['encuestador','fecha_dia','semana','Municipio']].copy() if not ninos.empty else pd.DataFrame()
-    if not _nin_enc.empty:
-        _nin_enc['tipo'] = 'Niño/a'
-        _nin_enc['_kid'] = ''
-
-    # Combinar — todas las personas tamizadas
-    _all_tam = pd.concat([_df_enc[['encuestador','fecha_dia','semana','tipo']] if not _df_enc.empty else pd.DataFrame(),
-                           _nin_enc[['encuestador','fecha_dia','semana','tipo']] if not _nin_enc.empty else pd.DataFrame()],
-                          ignore_index=True)
-    _all_tam = _all_tam[_all_tam['encuestador'].notna()].copy()
-    _all_tam['Equipo'] = _all_tam['encuestador'].map(_enc_eq_map['Equipo'])
-    _all_tam['Región'] = _all_tam['encuestador'].map(_enc_eq_map['Región'])
-    _all_tam['semana_str'] = pd.to_datetime(_all_tam['semana'].astype(str), errors='coerce').dt.strftime('%d/%m')
-
-    # ── TABLA TOTAL POR ENCUESTADORA ─────────────────────────────────────────
-    st.markdown("### 👤 Total tamizajes por encuestadora")
-    if not _all_tam.empty:
-        _tab_enc = _all_tam.groupby('encuestador').agg(
-            Total=('encuestador','count'),
-            Niños=('tipo', lambda x: (x=='Niño/a').sum()),
-            Maternas=('tipo', lambda x: (x=='Materna').sum()),
-            Días_campo=('fecha_dia','nunique'),
-        ).reset_index()
-        _tab_enc['Prom./día'] = (_tab_enc['Total'] / _tab_enc['Días_campo']).round(1)
-        _tab_enc['Equipo']    = _tab_enc['encuestador'].map(_enc_eq_map['Equipo'])
-        _tab_enc['Región']    = _tab_enc['encuestador'].map(_enc_eq_map['Región'])
-        _tab_enc['Rol']       = _tab_enc['encuestador'].map(_enc_eq_map['Rol'])
-        _tab_enc = _tab_enc.sort_values('Total', ascending=False)
-
-        # Fila de totales
-        _tot_row = pd.DataFrame([{
-            'encuestador': '📊 TOTAL',
-            'Total':      _tab_enc['Total'].sum(),
-            'Niños':      _tab_enc['Niños'].sum(),
-            'Maternas':   _tab_enc['Maternas'].sum(),
-            'Días_campo': '—',
-            'Prom./día':  '—',
-            'Equipo': '', 'Región': '', 'Rol': '',
-        }])
-        _tab_enc_show = pd.concat([_tab_enc, _tot_row], ignore_index=True)
-        _col_ord = ['Región','Equipo','encuestador','Rol','Total','Niños','Maternas','Días_campo','Prom./día']
-        st.dataframe(_tab_enc_show[[c for c in _col_ord if c in _tab_enc_show.columns]].rename(columns={'encuestador':'Encuestadora'}),
-                     use_container_width=True, hide_index=True)
-
-        # Gráfica: total por encuestadora
-        _chart_enc = _tab_enc.set_index('encuestador')[['Niños','Maternas']].sort_values('Niños')
-        st.bar_chart(_chart_enc, color=['#4e79a7','#f28e2b'])
-
-    st.markdown("---")
-
-    # ── TABLA SEMANAL POR ENCUESTADORA ───────────────────────────────────────
-    st.markdown("### 📅 Tamizajes por semana y encuestadora")
-    if not _all_tam.empty and 'semana_str' in _all_tam.columns:
-        _pivot_sem = _all_tam.groupby(['semana_str','encuestador']).size().reset_index(name='n')
-        _pivot_sem_w = _pivot_sem.pivot(index='encuestador', columns='semana_str', values='n').fillna(0).astype(int)
-        # Añadir columna total
-        _pivot_sem_w['Total'] = _pivot_sem_w.sum(axis=1)
-        _pivot_sem_w = _pivot_sem_w.sort_values('Total', ascending=False)
-        # Fila total
-        _pivot_sem_w.loc['📊 TOTAL'] = _pivot_sem_w.sum()
-        st.dataframe(_pivot_sem_w, use_container_width=True)
-
-        # Gráfica: evolución semanal por equipo
-        st.markdown("**Evolución semanal por equipo**")
-        _pivot_eq_sem = _all_tam.dropna(subset=['Equipo']).groupby(['semana_str','Equipo']).size().reset_index(name='n')
-        if not _pivot_eq_sem.empty:
-            _pivot_eq_w = _pivot_eq_sem.pivot(index='semana_str', columns='Equipo', values='n').fillna(0).astype(int)
-            st.bar_chart(_pivot_eq_w)
-
-    st.markdown("---")
-
-    # ── TABLA TOTAL POR EQUIPO CON NIÑOS Y MATERNAS ──────────────────────────
-    st.markdown("### 🏷️ Desglose por equipo (niños + maternas)")
-    if not _all_tam.empty:
-        _tab_eq = _all_tam.dropna(subset=['Equipo']).groupby(['Región','Equipo']).agg(
-            Total=('Equipo','count'),
-            Niños=('tipo', lambda x: (x=='Niño/a').sum()),
-            Maternas=('tipo', lambda x: (x=='Materna').sum()),
-            Días=('fecha_dia','nunique'),
-        ).reset_index()
-        _tab_eq['Prom./día'] = (_tab_eq['Total'] / _tab_eq['Días']).round(1)
-        _tot_eq = pd.DataFrame([{'Región':'📊 TOTAL','Equipo':'','Total':_tab_eq['Total'].sum(),
-                                   'Niños':_tab_eq['Niños'].sum(),'Maternas':_tab_eq['Maternas'].sum(),
-                                   'Días':'—','Prom./día':'—'}])
-        st.dataframe(pd.concat([_tab_eq.sort_values('Total',ascending=False), _tot_eq], ignore_index=True),
-                     use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── MÉTRICAS DE CALIDAD (duración, flags) ────────────────────────────────
-    st.markdown("### ⚙️ Métricas de calidad por encuestadora")
+    # ── MÉTRICAS DE RENDIMIENTO ───────────────────────────────────────────────
+    st.markdown("**Métricas de rendimiento por encuestadora**")
     metricas = stats_enc(df)
     metricas = metricas.merge(
         DF_EQUIPOS[['Nombre','Rol','Equipo','Región']],
@@ -1965,24 +1876,70 @@ with tab_enc:
     ).drop(columns=['Nombre'], errors='ignore')
     col_orden = [c for c in ['Región','Equipo','Encuestador/a','Rol','Encuestas','Días campo',
                               'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
-    st.dataframe(metricas[col_orden].sort_values(['Región','Equipo'], na_position='last'),
-                 use_container_width=True, hide_index=True)
+    _met_sorted = metricas[col_orden].sort_values(['Región','Equipo'], na_position='last')
+    st.dataframe(_met_sorted, use_container_width=True, hide_index=True)
 
-    enc_datos = set(df['encuestador'].dropna().astype(str).unique())
-    enc_plan  = set(DF_EQUIPOS['Nombre'].unique())
+    # Gráfica: encuestas por encuestadora
+    if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
+        _chart_m = _met_sorted.dropna(subset=['Encuestas']).set_index('Encuestador/a')['Encuestas'].sort_values()
+        st.bar_chart(_chart_m)
+
+    enc_datos  = set(df['encuestador'].dropna().astype(str).unique())
+    enc_plan   = set(DF_EQUIPOS['Nombre'].unique())
     sin_equipo = enc_datos - enc_plan
     if sin_equipo:
-        st.warning(f"⚠️ Encuestadoras en datos sin equipo asignado: {', '.join(sorted(sin_equipo))}")
+        st.warning(f"⚠️ Encuestadoras sin equipo asignado: {', '.join(sorted(sin_equipo))}")
+
+    st.markdown("---")
+
+    # ── NIÑOS TAMIZADOS POR ENCUESTADORA ─────────────────────────────────────
+    if not ninos.empty and 'encuestador' in ninos.columns:
+        st.markdown("**Niños tamizados por encuestadora**")
+        _ne = ninos.groupby('encuestador').size().reset_index(name='Niños tamizados').sort_values('Niños tamizados', ascending=False)
+        _ne_tot = pd.DataFrame([{'encuestador':'📊 TOTAL', 'Niños tamizados': _ne['Niños tamizados'].sum()}])
+        st.dataframe(pd.concat([_ne, _ne_tot], ignore_index=True), use_container_width=True, hide_index=True)
+        st.bar_chart(_ne.set_index('encuestador')['Niños tamizados'].sort_values())
+
+    st.markdown("---")
+
+    # ── ENCUESTAS POR DÍA Y ENCUESTADORA ─────────────────────────────────────
+    st.markdown("**Encuestas por día y encuestadora**")
+    pivot = df.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
+    if not pivot.empty:
+        pivot_w = pivot.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
+        pivot_w['TOTAL'] = pivot_w.sum(axis=1)
+        st.dataframe(pivot_w, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── NIÑOS POR SEMANA Y ENCUESTADORA ──────────────────────────────────────
+    st.markdown("**Niños tamizados por semana y encuestadora**")
+    if not ninos.empty and 'semana' in ninos.columns and 'encuestador' in ninos.columns:
+        _sem_str = pd.to_datetime(ninos['semana'].astype(str), errors='coerce').dt.strftime('Sem %d/%m')
+        _ninos_sem = ninos.copy(); _ninos_sem['semana_str'] = _sem_str
+        _pivot_ns = _ninos_sem.groupby(['semana_str','encuestador']).size().reset_index(name='n')
+        _pivot_ns_w = _pivot_ns.pivot(index='encuestador', columns='semana_str', values='n').fillna(0).astype(int)
+        _pivot_ns_w['Total'] = _pivot_ns_w.sum(axis=1)
+        _pivot_ns_w = _pivot_ns_w.sort_values('Total', ascending=False)
+        _pivot_ns_w.loc['📊 TOTAL'] = _pivot_ns_w.sum()
+        st.dataframe(_pivot_ns_w, use_container_width=True)
+
+        # Gráfica evolución semanal por equipo
+        _ninos_sem['Equipo'] = _ninos_sem['encuestador'].map(_enc_eq_map['Equipo'])
+        _pivot_eq = _ninos_sem.dropna(subset=['Equipo']).groupby(['semana_str','Equipo']).size().reset_index(name='n')
+        if not _pivot_eq.empty:
+            st.markdown("**Evolución semanal por equipo (niños)**")
+            st.bar_chart(_pivot_eq.pivot(index='semana_str', columns='Equipo', values='n').fillna(0))
+
+    st.markdown("---")
 
     if not todos.empty and 'encuestador' in todos.columns:
         st.markdown("**Flags por encuestadora**")
         fe = todos.groupby(['encuestador','severidad']).size().unstack(fill_value=0).reset_index()
-        fe['Total flags'] = fe.drop(columns='encuestador').sum(axis=1)
-        st.dataframe(fe.sort_values('Total flags', ascending=False), use_container_width=True, hide_index=True)
+        fe['Total'] = fe.drop(columns='encuestador').sum(axis=1)
+        st.dataframe(fe.sort_values('Total', ascending=False), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-
-    # Estructura de equipos (al final)
     with st.expander("📋 Directorio de equipos"):
         st.dataframe(DF_EQUIPOS, use_container_width=True, hide_index=True)
 
