@@ -35,26 +35,31 @@ PERFILES_EMBARAZADA = ['Mujer embarazada',
 PERFILES_LACTANTE   = ['Madre lactante']
 PERFILES_MATERNAS   = PERFILES_EMBARAZADA + PERFILES_LACTANTE
 
-# Estructura de equipos de campo
+# Estructura de equipos de campo (actualizada julio 2026)
+# Nota: Equipo Occidente (Damaris, Norma) tiene zona asignada Santa Ana pero
+# en la práctica ha cubierto Ahuachapán Centro. Sus tamizados cuentan para Occidente.
 EQUIPOS = [
-    # (Región, Equipo, Zona, Nombre, Rol)
-    ("Oriente",     "Equipo 1 Usulután",       "Usulután Este",     "Helen Romero",                    "Técnica Nutrición"),
-    ("Oriente",     "Equipo 1 Usulután",       "Usulután Este",     "Fátima Gómez",                    "Promotora"),
-    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Fátima Granados",                 "Técnica Nutrición"),
-    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Dolores",                         "Promotora"),
-    ("Oriente",     "Equipo 2 San Miguel",     "San Miguel Centro", "Arely Granados",                  "Promotora"),
-    ("Oriente",     "Equipo 3 Moncagua",       "San Miguel Centro", "Maryori Hernández",               "Técnica Nutrición"),
-    ("Oriente",     "Equipo 3 Moncagua",       "San Miguel Centro", "Yulissa Hernández",               "Promotora"),
-    ("Occidente",   "Equipo 4 Santa Ana",      "Santa Ana Centro",  "Damaris González",                "Técnica Nutrición"),
-    ("Occidente",   "Equipo 4 Santa Ana",      "Santa Ana Centro",  "Norma Rivera",                    "Promotora"),
-    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Marcelino",                 "Técnica Nutrición"),
-    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Geraldina Arriola",               "Promotora"),
-    ("Occidente",   "Equipo 5 Ahuachapán",     "Ahuachapán Centro", "Yeldi Pérez",                     "Promotora"),
-    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Centro","Gaby Pino",                      "Técnica Nutrición"),
-    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Centro","Claudia Patricia Mendez Guardado","Promotora"),
-    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Brenda Nerio",                   "Técnica Nutrición"),
-    ("San Salvador","Equipo 6 SS Centro/Este",  "San Salvador Este",  "Rosibel Henríquez",              "Promotora"),
-    # Trinidad Granados — Coordinadora (excluida de métricas de campo)
+    # (Región, Equipo, Zona asignada, Nombre normalizado, Rol)
+    # ── Equipo Oriente ─────────────────────────────────────────────────────
+    ("Oriente",      "Equipo Oriente 1 San Miguel", "San Miguel Centro",   "Arely Granados",    "Técnica Nutrición"),
+    ("Oriente",      "Equipo Oriente 1 San Miguel", "San Miguel Centro",   "Dolores",           "Promotora"),
+    ("Oriente",      "Equipo Oriente 2 Usulután",   "Usulután Este",       "Fátima Gómez",      "Promotora"),
+    ("Oriente",      "Equipo Oriente 2 Usulután",   "Usulután Este",       "Helen Romero",      "Técnica Nutrición"),
+    ("Oriente",      "Equipo Oriente 3 Moncagua",   "San Miguel Centro",   "Yulissa Hernández", "Promotora"),
+    ("Oriente",      "Equipo Oriente 3 Moncagua",   "San Miguel Centro",   "Maryori Hernández", "Técnica Nutrición"),
+    # ── Equipo Centro ──────────────────────────────────────────────────────
+    ("Centro",       "Equipo Centro SS",            "San Salvador Centro", "Brenda Nerio",      "Técnica Nutrición"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Centro", "Claudia",           "Promotora"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Gaby Pino",         "Técnica Nutrición"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Rosibel Henríquez", "Promotora"),
+    # ── Equipo Occidente ───────────────────────────────────────────────────
+    ("Occidente",    "Equipo Occidente",            "Santa Ana Centro",    "Damaris González",  "Técnica Nutrición"),
+    ("Occidente",    "Equipo Occidente",            "Santa Ana Centro",    "Norma Rivera",      "Promotora"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Rosibel Arriola",   "Promotora"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Yeldi Pérez",       "Técnica Nutrición"),
+    # ── Coordinación (excluida de métricas) ────────────────────────────────
+    # Tatiana Garay — Coordinadora zona SM
+    # Trinidad Granados — Coordinadora (su 1 registro se reasigna vía alias)
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
 
@@ -163,12 +168,35 @@ def unificar(df, dist_map, cant_map, us_map):
     df['nombre']      = df['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
     df['encuestador'] = df['encuestador'].astype(str).str.strip().replace('nan', pd.NA)
 
-    # Normalización de nombres de encuestadoras (variantes en Kobo → nombre canónico)
+    # Normalización de nombres de encuestadoras:
+    # - Variantes históricas (nombres cortos con typos/sin tildes)
+    # - Nombres completos del KoBo actualizado (jul 2026) → nombre canónico corto
+    # IMPORTANTE: Rosibel Arriola y Rosibel Henríquez son personas DISTINTAS.
     _ENC_ALIASES = {
-        'Brenda Nerios':    'Brenda Nerio',
-        'Fatima Gomez':     'Fátima Gómez',
-        'Rosibel Arriola':  'Rosibel Henríquez',
-        'Trinidad Granados':'Gaby Pino',   # Coordinadora → registro contabilizado en SS Centro
+        # ── Variantes históricas ───────────────────────────────────────────
+        'Brenda Nerios':                      'Brenda Nerio',
+        'Fatima Gomez':                       'Fátima Gómez',
+        'Trinidad Granados':                  'Gaby Pino',      # Coord. → SS Este
+        # ── Nombres completos KoBo (versión jul 2026) ─────────────────────
+        'Brenda Lisseth Nerio Ramírez':       'Brenda Nerio',
+        'Briseyda Maryori Hernández Argueta': 'Maryori Hernández',
+        'Claudia Patricia Mendez Guardado':   'Claudia',
+        'Dámaris Gabriela González López':    'Damaris González',
+        'Damaris Gabriela González López':    'Damaris González',
+        'Dolores Victoria Alfaro Ochoa':      'Dolores',
+        'Fatima Arely Granados de Reyes':     'Arely Granados',
+        'Fátima Arely Granados de Reyes':     'Arely Granados',
+        'Fátima María Gómez de García':       'Fátima Gómez',
+        'Gabriela Pino Ventura':              'Gaby Pino',
+        'Geraldina Rocibel Arriola Natividad':'Rosibel Arriola',
+        'Helenn Virginia Romero Martínez':    'Helen Romero',
+        'Helen Virginia Romero Martínez':     'Helen Romero',
+        'Meyvin Yulissa Hernandez de Segovia':'Yulissa Hernández',
+        'Meyvin Yulissa Hernández de Segovia':'Yulissa Hernández',
+        'Norma Cecibeth Rivera de Arévalo':   'Norma Rivera',
+        'Rosibel Arely Henríquez Vasquez':    'Rosibel Henríquez',
+        'Yeldi Zeneida Marcelino Pérez':      'Yeldi Pérez',
+        'Yeldi Marcelino':                    'Yeldi Pérez',     # nombre corto anterior
     }
     df['encuestador'] = df['encuestador'].replace(_ENC_ALIASES)
 
@@ -1907,40 +1935,44 @@ with tab_enc:
 
         # Base combinada: niños + maternas sin niños (sin doble conteo)
         _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
-        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia','Municipio']].copy() if '_id' in df.columns else pd.DataFrame()
-        _nin_enc_base = ninos[['encuestador','fecha_dia','Municipio']].copy() if 'Municipio' in ninos.columns else ninos[['encuestador','fecha_dia']].copy()
+        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia']].copy() if '_id' in df.columns else pd.DataFrame()
+        _nin_enc_base = ninos[['encuestador','fecha_dia']].copy()
         _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
 
-        # Mapa Zona → Equipo/Región (para cruzar por Municipio, no por encuestador)
-        _zona_eq_map = (DF_EQUIPOS[['Zona','Equipo','Región']]
-                        .drop_duplicates('Zona').set_index('Zona'))
-
-        # Agrupar tamizados por Municipio (= Zona), cruzar con Equipo/Región
-        _todos_enc_base['Equipo'] = _todos_enc_base['encuestador'].map(_enc_equipo['Equipo'])
-        _todos_enc_base['Zona_enc'] = _todos_enc_base['encuestador'].map(_enc_equipo['Zona'])
-
-        # Para días de campo por equipo: días ÚNICOS donde cualquier miembro trabajó
-        _dias_por_equipo = (
-            _todos_enc_base.dropna(subset=['Equipo','fecha_dia'])
-            .groupby('Equipo')['fecha_dia'].nunique()
-            .reset_index(name='Días campo equipo')
-        )
-
-        # Agrupar por Municipio (zona real del dato) → tamizados completos sin perder nada
-        _mun_col = 'Municipio' if 'Municipio' in _todos_enc_base.columns else 'Zona_enc'
-        _resumen_mun = (_todos_enc_base.groupby(_mun_col).size()
-                        .reset_index(name='Tamizados')
-                        .rename(columns={_mun_col: 'Zona'}))
-        _resumen_mun['Región'] = _resumen_mun['Zona'].map(_zona_eq_map['Región'])
-        _resumen_mun['Equipo'] = _resumen_mun['Zona'].map(_zona_eq_map['Equipo'])
-        _resumen_equipo = _resumen_mun.dropna(subset=['Equipo']).copy()
-        _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
-        _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo']).round(1)
-
-        # Días únicos globales y total
-        _dias_globales = _todos_enc_base['fecha_dia'].nunique()
+        # Total real (= 535, sin filtrar por encuestador mapeado)
         _total_global  = len(_todos_enc_base)
+        _dias_globales = _todos_enc_base['fecha_dia'].nunique()
         _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
+
+        # Tamizados por encuestador
+        _tam_por_enc = (_todos_enc_base.groupby('encuestador')
+                        .agg(Tamizados=('encuestador','count')).reset_index())
+        _tam_por_enc['Equipo'] = _tam_por_enc['encuestador'].map(_enc_equipo['Equipo'])
+        _tam_por_enc['Región'] = _tam_por_enc['encuestador'].map(_enc_equipo['Región'])
+        _tam_por_enc['Zona']   = _tam_por_enc['encuestador'].map(_enc_equipo['Zona'])
+
+        # Días únicos por equipo: unir todo el base con el mapa encuestador→Equipo
+        _enc_eq_map = _tam_por_enc.dropna(subset=['Equipo'])[['encuestador','Equipo']]
+        _base_con_eq = _todos_enc_base.merge(_enc_eq_map, on='encuestador', how='left')
+        _dias_por_equipo = (_base_con_eq.dropna(subset=['Equipo','fecha_dia'])
+                            .groupby('Equipo')['fecha_dia'].nunique()
+                            .reset_index(name='Días campo equipo'))
+
+        # Base de todos los equipos (para mostrar los que tienen 0)
+        _equipos_base = (DF_EQUIPOS[['Región','Equipo','Zona']]
+                         .drop_duplicates(['Equipo','Zona'])
+                         .reset_index(drop=True))
+
+        # Tamizados por equipo+zona (un equipo puede tener varias zonas)
+        _tam_eq = (_tam_por_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona'])
+                   .agg(Tamizados=('Tamizados','sum')).reset_index())
+
+        # Merge con base completa → equipos con 0 también aparecen
+        _resumen_equipo = _equipos_base.merge(_tam_eq, on=['Región','Equipo','Zona'], how='left')
+        _resumen_equipo['Tamizados'] = _resumen_equipo['Tamizados'].fillna(0).astype(int)
+        _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
+        _resumen_equipo['Días campo equipo'] = _resumen_equipo['Días campo equipo'].fillna(0).astype(int)
+        _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo'].replace(0, pd.NA)).round(1)
 
         # KPIs rápidos
         _col1, _col2, _col3 = st.columns(3)
@@ -1953,7 +1985,7 @@ with tab_enc:
         _res_eq_display = _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']].sort_values('Tamizados', ascending=False).copy()
         _tot_eq = pd.DataFrame([{
             'Región': '', 'Equipo': '📊 TOTAL', 'Zona': '',
-            'Tamizados': int(_res_eq_display['Tamizados'].sum()),
+            'Tamizados': int(_total_global),   # total real (535), no suma parcial
             'Días campo equipo': '—',
             'Prom./día': ''
         }])
