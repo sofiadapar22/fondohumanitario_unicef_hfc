@@ -1,0 +1,82 @@
+﻿u_name;u_code;adm3_name;adm3_pcode
+US-B Mejicanos SS Las nubes;1;Mejicanos;SV10001004
+US-I Mejicanos SS “Dr. Hugo Moran Quijada”;2;Mejicanos;SV10001004
+US-I Mejicanos SS ZACAMIL;3;Mejicanos;SV10001004
+US-B San salvador SS LAS BRISAS;4;San Salvador;SV10001005
+US-E San Salvador SS BARRIOS;5;San Salvador;SV10001005
+US-I San Salvador SS LOURDES;6;San Salvador;SV10001005
+US-I San Salvador SS MONSERRAT;7;San Salvador;SV10001005
+US-I San Salvador SS SAN ANTONIO ABAD;8;San Salvador;SV10001005
+US-B San Salvador SS Los Rosales (Tutunichapa);9;San Salvador;SV10001005
+US-E San Salvador SS San Miguelito “Dr. Juan Ramon Alvarenga”;10;San Salvador;SV10001005
+US-I San Salvador SS CONCEPCION;11;San Salvador;SV10001005
+US-E San Salvador SS SAN JACINTO;12;San Salvador;SV10001005
+US-B San Martín SS Los Letona;13;San Martín;SV10002002
+US-E SAN MARTIN SS;14;San Martín;SV10002002
+US-B San Martin SS Cmnd Santa Fe;15;Tonacatepeque;SV10002004
+US-I Tonacatepeque;16;Tonacatepeque;SV10002004
+US-I Atavista SS;17;Tonacatepeque;SV10002004
+USI Distrito Italia SS;18;Tonacatepeque;SV10002004
+US-B Ahuachapan AH Ashapuco;19;Ahuachapán;SV01001001
+US-B Ahuachapan AH Un Rancho y un lucero;20;Ahuachapán;SV01001001
+US-B Ahuachapan AH El Barro;21;Ahuachapán;SV01001001
+US-B Ahuachapan AH Llano la Laguna;22;Ahuachapán;SV01001001
+US-B Ahuachapan AH Santa Cruz;23;Ahuachapán;SV01001001
+US-I Ahuachapan AH;24;Ahuachapán;SV01001001
+US-I Ahuachapan AH Las Chinamas;25;Ahuachapán;SV01001001
+US-B Apaneca AH Quezalapa.;26;Apaneca;SV01001002
+US-I Apaneca. AH;27;Apaneca;SV01001002
+US-B Concepción de Ataco AH El Triunfo;28;Concepción de Ataco;SV01001003
+US-I Concepción de Ataco AH;29;Concepción de Ataco;SV01001003
+US-B Tacuba AH El Sincuyo;30;Tacuba;SV01001004
+US-B Tacuba AH La Magdalena;31;Tacuba;SV01001004
+US-B Tacuba AH San Rafael;32;Tacuba;SV01001004
+US-B Tacuba AH Valle La Puerta;33;Tacuba;SV01001004
+US-B Tacuba AH Pandiadura;34;Tacuba;SV01001004
+US-B Tacuba AH El Jicaro;35;Tacuba;SV01001004
+US-B Tacuba AH La Escuela de El Rodeo;36;Tacuba;SV01001004
+US-B Tacuba AH Las Palmeras;37;Tacuba;SV01001004
+US-E Tacuba AH;38;Tacuba;SV01001004
+US-B Santa Ana SA Planes Laguna;39;Santa Ana;SV12001001
+US-E Santa Ana SA DR. TOMÁS PINEDA M;40;Santa Ana;SV12001001
+US-I Santa Ana SA Casa del Niño;41;Santa Ana;SV12001001
+US-I Santa Ana SA El Palmar;42;Santa Ana;SV12001001
+US-I Santa Ana SA Natividad;43;Santa Ana;SV12001001
+US-I Santa Ana SA San Miguelito;44;Santa Ana;SV12001001
+US-I Santa Ana SA Santa Barbara;45;Santa Ana;SV12001001
+US-I Santa Ana SA Santa Lucia;46;Santa Ana;SV12001001
+US-I Santa Ana SA San Rafael;47;Santa Ana;SV12001001
+US-I Moncagua SM El Platanar;48;Moncagua;SV09001003
+US-I Moncagua SM;49;Moncagua;SV09001003
+US-B San Miguel SM El Tecomatal;50;San Miguel;SV09001005
+US-B San Miguel SM Espiritu Santo;51;San Miguel;SV09001005
+US-B San Miguel SM Las Brisas;52;San Miguel;SV09001005
+US-E Ciudad Mujer;53;San Miguel;SV09001005
+US-E San Miguel SM;54;San Miguel;SV09001005
+US-E San Miguel SM El Zamoran;55;San Miguel;SV09001005
+US-I San Miguel SM El Niño;56;San Miguel;SV09001005
+US-I San Miguel SM Martin Zaldivar Colonia Carrillo;57;San Miguel;SV09001005
+US-I San Miguel SM Miraflores;58;San Miguel;SV09001005
+US-I San Miguel SM San Antonio Silva;59;San Miguel;SV09001005
+US-I San Miguel SM San Carlos;60;San Miguel;SV09001005
+"US-I San Miguel SM La Presita ""Dr. Roberto A. Carías""";61;San Miguel;SV09001005
+US-I San Miguel SM Milagro de la Paz;62;San Miguel;SV09001005
+US-B Santa Elena US Amate Norte;63;Santa Elena;SV14001007
+US-B Santa Elena US El Nanzal 1;64;Santa Elena;SV14001007
+US-B Santa Elena US El Volcan;65;Santa Elena;SV14001007
+US-B Santa Elena US Joya Ancha Arriba;66;Santa Elena;SV14001007
+US-I Santa Elena US;67;Santa Elena;SV14001007
+US-B Concepcion Batres US El Cañal;68;Concepción Batres;SV14001002
+US-B Concepcion Batres US San Felipe;69;Concepción Batres;SV14001002
+US-E Concepción Batres US;70;Concepción Batres;SV14001002
+US-B Concepcion Batres US Hacienda Nueva;71;Concepción Batres;SV14001002
+US-B Ereguayquin US Analco;72;Ereguayquín;SV14001003
+US-I Ereguayquin US;73;Ereguayquín;SV14001003
+US-I Ciudad Delgado SS;74;Ciudad Delgado;SV10001002
+US-I Ciudad Delgado SS Habitat Confien;75;Ciudad Delgado;SV10001002
+US-E San Antonio;76;Soyapango;SV10002003
+US-I Guadalupe Soyapango (Licda. Zoila Marina de Guadrón);77;Soyapango;SV10002003
+US-I Santa Lucia;78;Soyapango;SV10002003
+US-I Unicentro;79;Soyapango;SV10002003
+US-I Amatepec;80;Soyapango;SV10002003
+US California;81;California;SV14001001
