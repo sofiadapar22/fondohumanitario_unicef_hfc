@@ -1801,16 +1801,68 @@ with tab_ref_check:
 
             st.markdown("---")
 
-        # ── Referencias dudosas ─────────────────────────────────────────────
-        f_dud = f_ref[f_ref['severidad'] == 'Media']
-        if not f_dud.empty:
-            with st.expander(f"🟡 Referencia con diagnóstico normal ({len(f_dud)} casos) — clic para ver"):
-                cols_show2 = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag'] if c in f_dud.columns]
-                st.dataframe(
-                    f_dud[cols_show2].rename(columns={'fecha_dia':'Fecha','encuestador':'Encuestadora','distrito_nombre':'Distrito'})
-                    .sort_values('Fecha', ascending=False),
-                    use_container_width=True, hide_index=True
+        # ── Niños con diagnóstico normal/vulnerable pero con referencia ──────
+        st.markdown("### 🟡 Niños referenciados con diagnóstico normal")
+        st.caption("Estos niños recibieron referencia aunque su diagnóstico no indica desnutrición crítica. "
+                   "Se recomienda revisar el caso con la encuestadora para validar el criterio clínico.")
+
+        # Construir tabla directamente desde ninos para incluir todas las columnas clínicas
+        _col_ref_n  = '¿Se brindó referencia?'
+        _col_pt     = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+        _col_te     = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+        _col_pe     = '¿Cuál es el diagnóstico nutricional de peso edad?'
+        _col_muac   = 'Diagnóstico nutricional según perímetro braquial'
+        _col_nombre = '¿Cuál es el nombre del niño/a?'
+        _CRITICOS   = ['desnutrici','emaciado','emaciacion','aguda severa','aguda moderada']
+
+        if not ninos.empty and _col_ref_n in ninos.columns and _col_pt in ninos.columns:
+            _mask_ref = ninos[_col_ref_n].astype(str).str.lower().str.strip() == 'sí'
+            # Excluir casos con diagnóstico crítico en CUALQUIER columna
+            def _tiene_critico(row):
+                for col in [_col_pt, _col_te, _col_pe, _col_muac]:
+                    val = str(row.get(col, '') or '').lower()
+                    if any(c in val for c in _CRITICOS):
+                        return True
+                return False
+            _mask_no_critico = ~ninos.apply(_tiene_critico, axis=1)
+            _mal_ref = ninos[_mask_ref & _mask_no_critico].copy()
+
+            if _mal_ref.empty:
+                st.success("✅ No hay niños con referencia y diagnóstico normal.")
+            else:
+                st.warning(f"⚠️ {len(_mal_ref)} niños referenciados sin diagnóstico crítico")
+
+                # Tabla con todas las columnas clínicas
+                _cols_display = {
+                    'encuestador':   'Encuestadora',
+                    'Municipio':     'Municipio',
+                    'distrito_nombre':'Distrito',
+                    _col_nombre:     'Nombre niño/a',
+                    'edad_txt':      'Edad',
+                    'peso_nino':     'Peso (kg)',
+                    'talla_nino':    'Talla (cm)',
+                    _col_te:         'Dx talla/edad',
+                    _col_pe:         'Dx peso/edad',
+                    _col_pt:         'Dx peso/talla',
+                    _col_muac:       'Dx perímetro braquial',
+                    _col_ref_n:      'Referencia',
+                }
+                _cols_ok = {k: v for k, v in _cols_display.items() if k in _mal_ref.columns}
+                _tabla_mal_ref = _mal_ref[list(_cols_ok.keys())].rename(columns=_cols_ok)
+
+                st.dataframe(_tabla_mal_ref, use_container_width=True, hide_index=True)
+
+                # Descarga Excel
+                _buf_mr = io.BytesIO()
+                _tabla_mal_ref.to_excel(_buf_mr, index=False); _buf_mr.seek(0)
+                st.download_button(
+                    "⬇️ Descargar tabla para re-análisis (.xlsx)",
+                    _buf_mr,
+                    "ninos_mal_referenciados.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+        else:
+            st.info("No hay datos suficientes para evaluar referencias.")
 
         # ── Resumen por encuestadora ────────────────────────────────────────
         st.markdown("---")
