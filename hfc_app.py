@@ -2377,6 +2377,187 @@ with tab_geo_tab:
 # ── TAB 10: EXPORTAR ───────────────────────────
 with tab_export:
     st.subheader("📥 Exportar bases de datos")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXPORT PRINCIPAL: Base FUSAL formato estándar (multi-hoja)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 📋 Base FUSAL — Formato estándar de análisis")
+    st.caption(
+        "Mismo formato que el archivo de avances: hojas separadas por tipo de registro. "
+        "Todas las correcciones de limpieza aplicadas: aliases de nombres, corrección de talla, geografía. "
+        "Incluye columna **Equipo** y **Semana** ya asignadas."
+    )
+
+    def _sem_label(fecha, sem_map):
+        """Convierte fecha de inicio de semana → 'Sem N (DD mon)'."""
+        return sem_map.get(str(fecha), str(fecha) if pd.notna(fecha) else '')
+
+    def construir_base_fusal(df, ninos, df_adic_raw):
+        """Genera dict de DataFrames para exportar en formato FUSAL."""
+
+        # ── Mapa encuestador → Equipo (con aliases ya aplicados en df/ninos) ──
+        _eq_map = DF_EQUIPOS[['Nombre','Equipo']].drop_duplicates('Nombre').set_index('Nombre')['Equipo']
+
+        # ── Etiquetas de semana ordenadas ──────────────────────────────────────
+        _todas_fechas = sorted(df['semana'].dropna().unique()) if 'semana' in df.columns else []
+        _sem_map = {str(f): f"Sem {i+1} ({pd.Timestamp(str(f)).day} {pd.Timestamp(str(f)).strftime('%b').lower()})"
+                    for i, f in enumerate(_todas_fechas)}
+
+        def _add_equipo_semana(frame):
+            """Agrega columnas Equipo y Semana a cualquier DataFrame que tenga encuestador/semana."""
+            frame = frame.copy()
+            if 'encuestador' in frame.columns:
+                frame['Equipo'] = frame['encuestador'].map(_eq_map)
+            if 'semana' in frame.columns:
+                frame['Semana'] = frame['semana'].apply(lambda x: _sem_label(x, _sem_map))
+            return frame
+
+        # ── HOJA 1: Entrevistas (hogar) ───────────────────────────────────────
+        _ent = _add_equipo_semana(df.copy())
+        _ent_cols_front = ['fecha_dia','Semana','encuestador','Equipo','Municipio',
+                           'distrito_nombre','canton_nombre','nombre','perfil']
+        _ent_cols_front = [c for c in _ent_cols_front if c in _ent.columns]
+        _ent_rest = [c for c in _ent.columns if c not in _ent_cols_front
+                     and not c.startswith('hfc_') and c not in ('semana','mes','start','end',
+                     'duracion_min','fecha_ent','sabe_leer','telefono')]
+        hoja_entrevistas = _ent[_ent_cols_front + _ent_rest].rename(columns={
+            'fecha_dia':       'Fecha de la entrevista',
+            'encuestador':     'Encuestador',
+            'distrito_nombre': 'Distrito',
+            'canton_nombre':   'Cantón',
+            'nombre':          'Nombre persona entrevistada',
+            'perfil':          'Perfil',
+        })
+
+        # ── HOJA 2: Niños evaluados (datos clínicos) ──────────────────────────
+        _ninos_clin = ninos.copy()
+        _clin_drop = ['_id','fecha_dia','semana','mes','encuestador','Municipio',
+                      'distrito_nombre','canton_nombre','nombre','telefono','unidad_nombre',
+                      '_submission_id','peso_nino','talla_nino','muac']
+        _col_nombre_nino = '¿Cuál es el nombre del niño/a?'
+        _clin_front = [c for c in [_col_nombre_nino,'Sexo','Fecha de nacimiento del niño a evaluar',
+                                    'edad_txt','¿Cuál es el peso en Kg del niño/a?',
+                                    '¿Cuál es la talla en cm del niño/a?',
+                                    'Medida del perímetro braquial en cm',
+                                    '¿Cuál es el diagnóstico nutricional de la talla y edad?',
+                                    '¿Cuál es el diagnóstico nutricional de peso edad?',
+                                    '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+                                    'Diagnóstico nutricional según perímetro braquial',
+                                    '¿Se brindó referencia?',
+                                    '¿Se le brindó consejería a niños y niñas?'] if c in _ninos_clin.columns]
+        hoja_ninos_eval = _ninos_clin[_clin_front].rename(columns={'edad_txt': 'Edad'})
+
+        # ── HOJA 3: Niños + Hogar (1 fila x niño) ────────────────────────────
+        _nh = _add_equipo_semana(ninos.copy())
+        _nh_front = ['fecha_dia','Semana','encuestador','Equipo','Municipio',
+                     'distrito_nombre','canton_nombre']
+        _nh_front = [c for c in _nh_front if c in _nh.columns]
+        _nh_clin  = [c for c in _clin_front if c in _nh.columns]
+        hoja_ninos_hogar = _nh[_nh_front + _nh_clin].rename(columns={
+            'fecha_dia':       'Fecha de la entrevista',
+            'encuestador':     'Encuestador',
+            'distrito_nombre': 'Distrito',
+            'canton_nombre':   'Cantón',
+            'edad_txt':        'Edad',
+        })
+        hoja_ninos_hogar.insert(0, 'Tipo de registro', 'Niño/a evaluado(a)')
+
+        # ── HOJA 4: Registros (todo junto) ───────────────────────────────────
+        # Niños
+        _reg_cols = ['fecha_dia','semana','encuestador','Municipio','distrito_nombre',
+                     'canton_nombre'] + _clin_front
+        _reg_cols = [c for c in _reg_cols if c in ninos.columns]
+        _reg_ninos = _add_equipo_semana(ninos[_reg_cols].copy())
+        _reg_ninos.insert(0, 'Tipo de registro', 'Niño/a evaluado(a)')
+
+        # Maternas (embarazadas + lactantes)
+        _TIPO_PERFIL = {
+            **{p: 'Mujer embarazada (registro de embarazo)' for p in PERFILES_EMBARAZADA},
+            **{p: 'Madre lactante (registro de lactancia)'  for p in PERFILES_LACTANTE},
+        }
+        if 'perfil' in df.columns:
+            _df_mat = df[df['perfil'].isin(PERFILES_MATERNAS)].copy()
+            _df_mat = _add_equipo_semana(_df_mat)
+            _df_mat['Tipo de registro'] = _df_mat['perfil'].map(_TIPO_PERFIL).fillna(_df_mat['perfil'])
+            _mat_cols = ['Tipo de registro','fecha_dia','Semana','encuestador','Equipo',
+                         'Municipio','distrito_nombre','canton_nombre','nombre','perfil']
+            _mat_cols = [c for c in _mat_cols if c in _df_mat.columns]
+            _reg_mat = _df_mat[_mat_cols]
+        else:
+            _reg_mat = pd.DataFrame()
+
+        # Adicionales
+        _reg_adic = pd.DataFrame()
+        if df_adic_raw is not None and not df_adic_raw.empty:
+            _reg_adic = df_adic_raw.copy()
+            _reg_adic.insert(0, 'Tipo de registro', 'Niño/a adicional (no evaluado formalmente)')
+
+        hoja_registros = pd.concat([_reg_ninos, _reg_mat, _reg_adic], ignore_index=True)
+        hoja_registros = hoja_registros.sort_values(['fecha_dia','encuestador'], na_position='last')
+        hoja_registros = hoja_registros.rename(columns={
+            'fecha_dia':       'Fecha de la entrevista',
+            'encuestador':     'Encuestador',
+            'distrito_nombre': 'Distrito',
+            'canton_nombre':   'Cantón',
+            'nombre':          'Nombre persona entrevistada',
+            'perfil':          'Perfil',
+            'edad_txt':        'Edad',
+        })
+
+        # ── HOJA 5: Niños adicionales ─────────────────────────────────────────
+        hoja_adic = df_adic_raw.copy() if df_adic_raw is not None and not df_adic_raw.empty else pd.DataFrame()
+
+        # ── HOJA 6: Equipo de campo ───────────────────────────────────────────
+        hoja_equipo = DF_EQUIPOS[['Equipo','Zona','Nombre','Rol']].copy().rename(columns={
+            'Nombre': 'Encuestador/a', 'Zona': 'Municipio asignado'
+        })
+        _nota = pd.DataFrame([{
+            'Equipo': '⚠️ Nota',
+            'Municipio asignado': 'Equipo Occidente (Damaris González, Norma Rivera) tiene zona asignada Santa Ana Centro pero ha cubierto Ahuachapán Centro en la práctica.',
+            'Encuestador/a': '', 'Rol': ''
+        }])
+        hoja_equipo = pd.concat([hoja_equipo, _nota], ignore_index=True)
+
+        return {
+            'Registros (todo junto)': hoja_registros,
+            'Equipo de campo':        hoja_equipo,
+            'Niños + Hogar':          hoja_ninos_hogar,
+            'Entrevistas (hogar)':    hoja_entrevistas,
+            'Niños evaluados':        hoja_ninos_eval,
+            'Niños adicionales':      hoja_adic,
+        }
+
+    try:
+        _hojas_fusal = construir_base_fusal(df, ninos, df_adic_raw)
+        _n_reg = len(_hojas_fusal['Registros (todo junto)'])
+        _n_ent = len(_hojas_fusal['Entrevistas (hogar)'])
+        _n_nin = len(_hojas_fusal['Niños evaluados'])
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Registros totales", _n_reg)
+        col_b.metric("Entrevistas hogar", _n_ent)
+        col_c.metric("Niños evaluados",   _n_nin)
+
+        from datetime import datetime as _dt
+        _fecha_export = _dt.now().strftime('%Y%m%d')
+        _buf_fusal = io.BytesIO()
+        with pd.ExcelWriter(_buf_fusal, engine='openpyxl') as _w:
+            for _nombre_hoja, _df_hoja in _hojas_fusal.items():
+                if not _df_hoja.empty:
+                    _df_hoja.to_excel(_w, sheet_name=_nombre_hoja, index=False)
+        _buf_fusal.seek(0)
+        st.download_button(
+            f"⬇️ Descargar base FUSAL ({_fecha_export}).xlsx",
+            _buf_fusal,
+            f"UNICEF_FUSAL_Fondo_Humanitario_{_fecha_export}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+    except Exception as _e:
+        st.error(f"Error generando base FUSAL: {_e}")
+
+    st.markdown("---")
+    st.markdown("### 🗂️ Otras exportaciones")
     st.caption(
         "Base consolidada completa: **todas las variables** del formulario, v1 y v2 unificadas en una sola columna. "
         "Una fila por niño (si la entrevistada tiene varios niños se repite su info). "
