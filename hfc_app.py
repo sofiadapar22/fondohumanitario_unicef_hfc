@@ -1817,15 +1817,13 @@ with tab_ref_check:
 
         if not ninos.empty and _col_ref_n in ninos.columns and _col_pt in ninos.columns:
             _mask_ref = ninos[_col_ref_n].astype(str).str.lower().str.strip() == 'sí'
-            # Excluir casos con diagnóstico crítico en CUALQUIER columna
-            def _tiene_critico(row):
-                for col in [_col_pt, _col_te, _col_pe, _col_muac]:
-                    val = str(row.get(col, '') or '').lower()
-                    if any(c in val for c in _CRITICOS):
-                        return True
-                return False
-            _mask_no_critico = ~ninos.apply(_tiene_critico, axis=1)
-            _mal_ref = ninos[_mask_ref & _mask_no_critico].copy()
+            # Solo el dx peso/talla determina si la referencia es correcta.
+            # Si peso/talla NO es crítico (no es emaciado/desnutrición) → referencia incorrecta.
+            _dx_pt_val = ninos[_col_pt].astype(str).str.lower().str.strip()
+            _mask_pt_no_critico = ~_dx_pt_val.apply(
+                lambda v: any(c in v for c in _CRITICOS)
+            )
+            _mal_ref = ninos[_mask_ref & _mask_pt_no_critico].copy()
 
             if _mal_ref.empty:
                 st.success("✅ No hay niños con referencia y diagnóstico normal.")
