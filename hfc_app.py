@@ -1933,14 +1933,20 @@ with tab_enc:
         # Mapa encuestador → equipo y zona
         _enc_equipo = DF_EQUIPOS[['Nombre','Equipo','Zona','Región']].drop_duplicates('Nombre').set_index('Nombre')
 
-        # Base combinada: niños + maternas sin niños (sin doble conteo)
-        _ids_con_ninos_enc = set(ninos['_submission_id'].dropna()) if '_submission_id' in ninos.columns else set()
-        _mat_enc_base = df[~df['_id'].isin(_ids_con_ninos_enc)][['encuestador','fecha_dia']].copy() if '_id' in df.columns else pd.DataFrame()
+        # Base combinada: niños + TODAS las embarazadas/lactantes
+        # (misma lógica que Tab 1: tamizados = individuos evaluados, sin importar
+        #  si el hogar también tiene un niño — madre e hijo son personas distintas)
         _nin_enc_base = ninos[['encuestador','fecha_dia']].copy()
+        if 'perfil' in df.columns:
+            _mat_enc_base = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                             .drop_duplicates(subset=['nombre','perfil'])   # misma dedup que Tab 1
+                             [['encuestador','fecha_dia']].copy())
+        else:
+            _mat_enc_base = pd.DataFrame(columns=['encuestador','fecha_dia'])
         _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
 
-        # Total real (= 535, sin filtrar por encuestador mapeado)
-        _total_global  = len(_todos_enc_base)
+        # Total coincide con Tab 1 (total_tamizados)
+        _total_global  = total_tamizados   # usar el valor ya calculado = 837
         _dias_globales = _todos_enc_base['fecha_dia'].nunique()
         _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
 
@@ -2158,11 +2164,15 @@ with tab_enc:
 
     # ── BASE COMBINADA: niños + maternas sin niños ────────────────────────────
     # (sin doble conteo: las maternas con hijos ya están en ninos)
-    _ids_con_n = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
-    _mat_sn = df[~df['_id'].isin(_ids_con_n)][['encuestador','fecha_dia','semana']].copy() if '_id' in df.columns else pd.DataFrame()
+    # Misma lógica que Tab 1 y resumen por equipo: niños + todas las embarazadas/lactantes
     _nin_cols = ninos[['encuestador','fecha_dia','semana']].copy() if not ninos.empty else pd.DataFrame()
+    if 'perfil' in df.columns:
+        _mat_sn = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                   .drop_duplicates(subset=['nombre','perfil'])
+                   [['encuestador','fecha_dia','semana']].copy())
+    else:
+        _mat_sn = pd.DataFrame(columns=['encuestador','fecha_dia','semana'])
     _todos_tam = pd.concat([_nin_cols, _mat_sn], ignore_index=True)
-    # NO filtramos por encuestador.notna() para que el total cuadre con el dashboard
 
     # ── TOTAL POR ENCUESTADORA (todos los tamizajes) ──────────────────────────
     st.markdown("**Total tamizajes por encuestadora (niños + maternas)**")
