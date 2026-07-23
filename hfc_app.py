@@ -36,8 +36,8 @@ PERFILES_LACTANTE   = ['Madre lactante']
 PERFILES_MATERNAS   = PERFILES_EMBARAZADA + PERFILES_LACTANTE
 
 # Estructura de equipos de campo (actualizada julio 2026)
-# Nota: Equipo Occidente (Damaris, Norma) tiene zona asignada Santa Ana pero
-# en la práctica ha cubierto Ahuachapán Centro. Sus tamizados cuentan para Occidente.
+# Nota: Todo el Equipo Occidente opera en Ahuachapán Centro en la práctica.
+# La zona Santa Ana Centro está en el plan operativo pero no tiene registros.
 EQUIPOS = [
     # (Región, Equipo, Zona asignada, Nombre normalizado, Rol)
     # ── Equipo Oriente ─────────────────────────────────────────────────────
@@ -53,8 +53,8 @@ EQUIPOS = [
     ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Gaby Pino",         "Técnica Nutrición"),
     ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Rosibel Henríquez", "Promotora"),
     # ── Equipo Occidente ───────────────────────────────────────────────────
-    ("Occidente",    "Equipo Occidente",            "Santa Ana Centro",    "Damaris González",  "Técnica Nutrición"),
-    ("Occidente",    "Equipo Occidente",            "Santa Ana Centro",    "Norma Rivera",      "Promotora"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Damaris González",  "Técnica Nutrición"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Norma Rivera",      "Promotora"),
     ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Rosibel Arriola",   "Promotora"),
     ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Yeldi Pérez",       "Técnica Nutrición"),
     # ── Coordinación (excluida de métricas) ────────────────────────────────
@@ -67,7 +67,7 @@ DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','
 METAS_ZONA = {
     "San Miguel Centro":   400,
     "Ahuachapán Centro":   800,
-    "Santa Ana Centro":    400,
+    "Santa Ana Centro":    400,   # en plan operativo; Equipo Occidente opera en Ahuachapán en la práctica
     "San Salvador Este":   800,
     "San Salvador Centro": 800,
     "Usulután Este":       800,
@@ -1126,13 +1126,13 @@ with tab_avance:
     else:
         n_ninos_m = n_ninos_f = 0
 
-    # Mujeres tamizadas = solo las que tienen peso, talla o IMC (embarazadas/lactantes con medición)
+    # Mujeres tamizadas = embarazadas + lactantes, mismo método que Tab 1 (dedup por nombre+perfil)
     # Hombres = siempre 0 (no son tamizados, solo acompañantes)
-    df_mujeres_tam = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
-    df_mujeres_tam = df_mujeres_tam[
-        df_mujeres_tam[['peso','talla','imc']].notna().any(axis=1)
-    ] if all(c in df_mujeres_tam.columns for c in ['peso','talla','imc']) else df_mujeres_tam[df_mujeres_tam['perfil'].isin(PERFILES_MATERNAS)] if 'perfil' in df_mujeres_tam.columns else pd.DataFrame()
-    n_adult_f = len(df_mujeres_tam)
+    if 'perfil' in df.columns:
+        _df_mat_tab = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre', 'perfil'])
+        n_adult_f = int(_df_mat_tab['perfil'].isin(PERFILES_MATERNAS).sum())
+    else:
+        n_adult_f = 0
     n_adult_m = 0  # hombres no son tamizados
 
     # Consejería — hoja principal (todas las filas con consejería = Sí)
@@ -1164,6 +1164,9 @@ with tab_avance:
     st.caption("Mujeres ≥18 = embarazadas/lactantes con medición (peso, talla o IMC). Hombres = 0 (no son tamizados).")
 
     # ── Tabla por zona ──
+    # IMPORTANTE: usa exactamente el mismo método de conteo que Tab 1
+    #   - Ninos: len() de todos los ninos en esa zona (sin filtrar por sexo)
+    #   - Maternas: dedup por (nombre, perfil), filtro por PERFILES_MATERNAS (igual que global)
     st.markdown("**📋 Desagregación por zona**")
     filas_zona = []
     zonas_lista = sorted(set(
@@ -1171,46 +1174,64 @@ with tab_avance:
         list(df['Municipio'].dropna().unique() if 'Municipio' in df.columns else [])
     ))
     for zona in zonas_lista:
-        # Niños/Niñas de esa zona
+        # Niños de esa zona — total + desglose por sexo (sin excluir sexos no reconocidos del total)
         n_zona = ninos[ninos['Municipio'] == zona] if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame()
+        n_total_zona = len(n_zona)
         nm, nf = _sexo_es(n_zona['Sexo'], VAL_M, VAL_F) if not n_zona.empty and 'Sexo' in n_zona.columns else (0, 0)
+        # Ninos con sexo no reconocido se incluyen en total pero no en nm/nf
+        n_otro_sexo = n_total_zona - nm - nf
 
-        # Mujeres tamizadas de esa zona (con medición), deduplicadas por nombre
-        df_zona_f = df[(df['Municipio'] == zona)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'Municipio' in df.columns else pd.DataFrame()
-        if not df_zona_f.empty and all(c in df_zona_f.columns for c in ['peso','talla','imc']):
-            df_zona_f = df_zona_f[df_zona_f[['peso','talla','imc']].notna().any(axis=1)]
-        elif not df_zona_f.empty and 'perfil' in df_zona_f.columns:
-            df_zona_f = df_zona_f[df_zona_f['perfil'].isin(PERFILES_MATERNAS)]
-        af = len(df_zona_f)
+        # Maternas de esa zona — mismo método que Tab 1: dedup (nombre, perfil), filtro perfil
+        if 'perfil' in df.columns and 'Municipio' in df.columns:
+            df_mat_zona = (df[df['Municipio'] == zona]
+                           .dropna(subset=['nombre'])
+                           .drop_duplicates(subset=['nombre', 'perfil']))
+            n_emb_zona = int(df_mat_zona['perfil'].isin(PERFILES_EMBARAZADA).sum())
+            n_lac_zona = int(df_mat_zona['perfil'].isin(PERFILES_LACTANTE).sum())
+        else:
+            n_emb_zona = n_lac_zona = 0
+        af = n_emb_zona + n_lac_zona
 
         # Consejería zona
-        df_cons_zona = df[(df['Municipio'] == zona) & df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if 'consejeria' in df.columns and 'Municipio' in df.columns else pd.DataFrame()
+        df_cons_zona = (df[(df['Municipio'] == zona) &
+                           df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)]
+                        .dropna(subset=['nombre'])
+                        .drop_duplicates(subset=['nombre'])
+                        if 'consejeria' in df.columns and 'Municipio' in df.columns
+                        else pd.DataFrame())
         cons_zona = len(df_cons_zona)
 
-        total_zona = nm + nf + af
+        total_zona = n_total_zona + af
         if total_zona > 0 or cons_zona > 0:
             filas_zona.append({
                 'Zona': zona,
-                'Niños': nm, 'Niñas': nf,
-                'Mujeres ≥18': af, 'Hombres ≥18': 0,
+                'Niños': nm + n_otro_sexo,   # niños incluye los de sexo no reconocido
+                'Niñas': nf,
+                'Embarazadas': n_emb_zona,
+                'Lactantes': n_lac_zona,
                 'Total tamizados': total_zona,
                 'Con consejería': cons_zona,
             })
 
     if filas_zona:
         df_zona_tabla = pd.DataFrame(filas_zona)
-        # Fila total
+        # Fila total — debe coincidir con total_tamizados de Tab 1
         total_row = {
             'Zona': '📊 TOTAL',
             'Niños': df_zona_tabla['Niños'].sum(),
             'Niñas': df_zona_tabla['Niñas'].sum(),
-            'Mujeres ≥18': df_zona_tabla['Mujeres ≥18'].sum(),
-            'Hombres ≥18': df_zona_tabla['Hombres ≥18'].sum(),
+            'Embarazadas': df_zona_tabla['Embarazadas'].sum(),
+            'Lactantes': df_zona_tabla['Lactantes'].sum(),
             'Total tamizados': df_zona_tabla['Total tamizados'].sum(),
             'Con consejería': df_zona_tabla['Con consejería'].sum(),
         }
         df_zona_tabla = pd.concat([df_zona_tabla, pd.DataFrame([total_row])], ignore_index=True)
         st.dataframe(df_zona_tabla, use_container_width=True, hide_index=True)
+        # Verificar consistencia con total global
+        _diff = int(total_tamizados) - int(total_row['Total tamizados'])
+        if abs(_diff) > 0:
+            st.caption(f"⚠️ Diferencia de {_diff} registros vs total global ({total_tamizados}). "
+                       f"Pueden ser registros con Municipio vacío en el KoBo original.")
     else:
         st.info("Sin datos por zona disponibles.")
 
