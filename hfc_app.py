@@ -277,10 +277,18 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
 
     ninos = pd.concat(frames, ignore_index=True)
 
+    # Eliminar columnas duplicadas si el concat produjo alguna (mantener primera ocurrencia)
+    if ninos.columns.duplicated().any():
+        ninos = ninos.loc[:, ~ninos.columns.duplicated(keep='first')]
+
     # Solo incluir columnas de ref que NO estén ya en ninos (evita _x/_y duplicados)
     _ref_cols_to_add = [c for c in ref.columns if c not in ninos.columns or c == '_id']
-    _ref_slim = ref[_ref_cols_to_add].copy()
+    _ref_slim = ref[[c for c in _ref_cols_to_add if c in ref.columns]].copy()
     ninos = ninos.merge(_ref_slim, left_on='_submission_id', right_on='_id', how='left')
+
+    # Limpiar duplicados de columna que pudieron surgir del merge
+    if ninos.columns.duplicated().any():
+        ninos = ninos.loc[:, ~ninos.columns.duplicated(keep='first')]
     ninos['peso_nino']  = pd.to_numeric(ninos.get('¿Cuál es el peso en Kg del niño/a?'),  errors='coerce')
     ninos['talla_nino'] = pd.to_numeric(ninos.get('¿Cuál es la talla en cm del niño/a?'), errors='coerce')
     ninos['muac']       = pd.to_numeric(ninos.get('Medida del perímetro braquial en cm'),  errors='coerce')
@@ -2428,8 +2436,22 @@ with tab_export:
                 frame['Semana'] = frame['semana'].apply(lambda x: _sem_label(x, _sem_map))
             return frame
 
+        def _dedup_frame(frame):
+            """Elimina columnas con nombre duplicado (conserva la primera ocurrencia)."""
+            if frame.columns.duplicated().any():
+                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
+            return frame
+
+        def _reorder(frame, priority):
+            """Pone columnas priority al frente; el resto a continuación. Seguro con dups."""
+            frame = _dedup_frame(frame)
+            pri = [c for c in priority if c in frame.columns]
+            rest = [c for c in frame.columns if c not in set(pri)]
+            return frame[pri + rest]
+
         def _renombrar_pares_duplicados(frame):
             """Para cada par col / col.1: renombra col → col - Embarazada, col.1 → col - Lactante."""
+            frame = _dedup_frame(frame)
             cols = frame.columns.tolist()
             rename_map = {}
             for c in cols:
@@ -2438,7 +2460,8 @@ with tab_export:
                     if base in cols and base not in rename_map:
                         rename_map[base] = f"{base} - Embarazada"
                         rename_map[c]    = f"{base} - Lactante"
-            return frame.rename(columns=rename_map)
+            frame = frame.rename(columns=rename_map)
+            return _dedup_frame(frame)
 
         # ── HOJA 1: Entrevistas (hogar) ── todas las columnas, pares con sufijo ──
         _ent = _add_equipo_semana(df.copy())
@@ -2447,26 +2470,20 @@ with tab_export:
             'encuestador':   'Encuestador',
             '__version__':   'Versión de formulario',
         })
-        # Columnas prioritarias al frente
-        _ent_pri = [c for c in ['start','end','Semana','Encuestador','Equipo'] if c in _ent.columns]
-        _ent = _ent[_ent_pri + [c for c in _ent.columns if c not in _ent_pri]]
-        hoja_entrevistas = _ent
+        hoja_entrevistas = _reorder(_ent, ['start','end','Semana','Encuestador','Equipo'])
 
         # ── HOJA 2: Niños evaluados ── TODAS las columnas KoBo ────────────────
         _ninos_ev = _add_equipo_semana(ninos.copy())
-        # Restaurar nombre original del link key para que coincida con referencia
+        _ninos_ev = _dedup_frame(_ninos_ev)
         if '_submission_id' in _ninos_ev.columns:
             _ninos_ev = _ninos_ev.rename(columns={'_submission_id': '_submission__id'})
         _ninos_ev = _ninos_ev.rename(columns={
             'encuestador': 'Encuestador',
             '__version__': 'Versión de formulario',
         })
-        # Orden: link key + contexto hogar al frente, luego resto KoBo ninos
-        _nev_pri = [c for c in ['_submission__id','Semana','Encuestador','Equipo',
-                                  'fecha_dia','Municipio','distrito_nombre','canton_nombre',
-                                  'unidad_nombre','nombre','telefono'] if c in _ninos_ev.columns]
-        _ninos_ev = _ninos_ev[_nev_pri + [c for c in _ninos_ev.columns if c not in _nev_pri]]
-        hoja_ninos_eval = _ninos_ev
+        hoja_ninos_eval = _reorder(_ninos_ev, ['_submission__id','Semana','Encuestador','Equipo',
+                                                'fecha_dia','Municipio','distrito_nombre',
+                                                'canton_nombre','unidad_nombre','nombre','telefono'])
 
         # ── HOJA 3: Niños + Hogar ── 1 fila x niño, cols hogar prefijadas ──────
         # Preparar subconjunto del hogar con _hogar_id / _hogar_uuid
@@ -2487,16 +2504,19 @@ with tab_export:
             _nh_ninos = _nh_ninos.rename(columns={'_submission_id': '_submission__id'})
         # Merge: ninos._submission__id = hogar._hogar_id (evita conflicto con _id)
         _nh = _nh_ninos.merge(_hogar_sub, left_on='_submission__id', right_on='_hogar_id', how='left')
+        _nh = _dedup_frame(_nh)
         _nh = _add_equipo_semana(_nh)
         _nh = _nh.rename(columns={'encuestador': 'Encuestador'})
+        _nh = _dedup_frame(_nh)
 
         # Orden: _hogar_id, _hogar_uuid primero, luego cols nino, luego Hogar -
-        _nh_pri = [c for c in ['_hogar_id','_hogar_uuid','_submission__id','Semana','Equipo',
-                                 'Encuestador'] if c in _nh.columns]
+        _nh_pri  = [c for c in ['_hogar_id','_hogar_uuid','_submission__id','Semana','Equipo','Encuestador']
+                    if c in _nh.columns]
+        _nh_set  = set(_nh_pri)
         _nh_hogar = sorted([c for c in _nh.columns if c.startswith('Hogar - ')])
-        _nh_nino_cols = [c for c in _nh.columns if c not in _nh_pri and c not in _nh_hogar]
-        _nh = _nh[_nh_pri + _nh_nino_cols + _nh_hogar]
-        hoja_ninos_hogar = _nh
+        _nh_hogar_set = set(_nh_hogar)
+        _nh_nino_cols = [c for c in _nh.columns if c not in _nh_set and c not in _nh_hogar_set]
+        hoja_ninos_hogar = _nh[_nh_pri + _nh_nino_cols + _nh_hogar]
 
         # ── HOJA 4: Registros (todo junto) ────────────────────────────────────
         _TIPO_PERFIL = {
@@ -2506,6 +2526,7 @@ with tab_export:
 
         # Niños
         _reg_n = _add_equipo_semana(ninos.copy())
+        _reg_n = _dedup_frame(_reg_n)
         if '_submission_id' in _reg_n.columns:
             _reg_n = _reg_n.rename(columns={'_submission_id': 'ID_encuesta_hogar'})
         _reg_n = _reg_n.rename(columns={'encuestador': 'Encuestador'})
