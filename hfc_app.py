@@ -2435,13 +2435,15 @@ with tab_export:
 
         # ── HOJA 1: Entrevistas (hogar) ───────────────────────────────────────
         _ent = _add_equipo_semana(df.copy())
-        _ent_cols_front = ['fecha_dia','Semana','encuestador','Equipo','Municipio',
+        # _id es la llave para hacer JOIN con ID_encuesta_hogar en "Niños evaluados"
+        _ent_cols_front = ['_id','fecha_dia','Semana','encuestador','Equipo','Municipio',
                            'distrito_nombre','canton_nombre','nombre','perfil']
         _ent_cols_front = [c for c in _ent_cols_front if c in _ent.columns]
         _ent_rest = [c for c in _ent.columns if c not in _ent_cols_front
                      and not c.startswith('hfc_') and c not in ('semana','mes','start','end',
                      'duracion_min','fecha_ent','sabe_leer','telefono')]
         hoja_entrevistas = _ent[_ent_cols_front + _ent_rest].rename(columns={
+            '_id':             'ID_encuesta_hogar',   # llave → ID_encuesta_hogar en Niños evaluados
             'fecha_dia':       'Fecha de la entrevista',
             'encuestador':     'Encuestador',
             'distrito_nombre': 'Distrito',
@@ -2451,11 +2453,12 @@ with tab_export:
         })
 
         # ── HOJA 2: Niños evaluados (datos clínicos) ──────────────────────────
+        # Incluye metadatos de vínculo al hogar: ID encuesta + nombre madre + fecha + zona
         _ninos_clin = ninos.copy()
-        _clin_drop = ['_id','fecha_dia','semana','mes','encuestador','Municipio',
-                      'distrito_nombre','canton_nombre','nombre','telefono','unidad_nombre',
-                      '_submission_id','peso_nino','talla_nino','muac']
         _col_nombre_nino = '¿Cuál es el nombre del niño/a?'
+        # Metadatos que conectan al niño con su hogar en "Entrevistas (hogar)"
+        _meta_cols = [c for c in ['_submission_id','fecha_dia','encuestador','Municipio',
+                                   'distrito_nombre','canton_nombre','nombre'] if c in _ninos_clin.columns]
         _clin_front = [c for c in [_col_nombre_nino,'Sexo','Fecha de nacimiento del niño a evaluar',
                                     'edad_txt','¿Cuál es el peso en Kg del niño/a?',
                                     '¿Cuál es la talla en cm del niño/a?',
@@ -2466,7 +2469,15 @@ with tab_export:
                                     'Diagnóstico nutricional según perímetro braquial',
                                     '¿Se brindó referencia?',
                                     '¿Se le brindó consejería a niños y niñas?'] if c in _ninos_clin.columns]
-        hoja_ninos_eval = _ninos_clin[_clin_front].rename(columns={'edad_txt': 'Edad'})
+        hoja_ninos_eval = _ninos_clin[_meta_cols + _clin_front].rename(columns={
+            '_submission_id':  'ID_encuesta_hogar',   # enlace a _id en Entrevistas (hogar)
+            'fecha_dia':       'Fecha',
+            'encuestador':     'Encuestador',
+            'distrito_nombre': 'Distrito',
+            'canton_nombre':   'Cantón',
+            'nombre':          'Nombre madre/responsable',
+            'edad_txt':        'Edad',
+        })
 
         # ── HOJA 3: Niños + Hogar (1 fila x niño) ────────────────────────────
         _nh = _add_equipo_semana(ninos.copy())
