@@ -2418,15 +2418,51 @@ with tab_export:
         return sem_map.get(str(fecha), str(fecha) if pd.notna(fecha) else '')
 
     def construir_base_fusal(df, ninos, df_adic_raw):
-        """Genera dict de DataFrames para exportar en formato FUSAL (ref: Avances al 16 de julio-2)."""
+        """Genera base de exportación lo más raw posible del KoBo.
+        Transformaciones aplicadas:
+          1. Columnas duplicadas (.1) consolidadas por coalesce (se conserva una sola columna)
+          2. Correcciones geográficas ya aplicadas en df/ninos desde la carga
+          3. Niños duplicados eliminados (mismo submission + mismo nombre)
+          4. Columnas Semana y Equipo agregadas
+          Todo lo demás queda igual al KoBo original.
+        """
 
-        # ── Mapa encuestador → Equipo ──────────────────────────────────────────
+        # ── Helpers ───────────────────────────────────────────────────────────
         _eq_map = DF_EQUIPOS[['Nombre','Equipo']].drop_duplicates('Nombre').set_index('Nombre')['Equipo']
-
-        # ── Etiquetas de semana ────────────────────────────────────────────────
         _todas_fechas = sorted(df['semana'].dropna().unique()) if 'semana' in df.columns else []
         _sem_map = {str(f): f"Sem {i+1} ({pd.Timestamp(str(f)).day} {pd.Timestamp(str(f)).strftime('%b').lower()})"
                     for i, f in enumerate(_todas_fechas)}
+
+        def _dedup_frame(frame):
+            if frame.columns.duplicated().any():
+                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
+            return frame
+
+        def _reorder(frame, priority):
+            """Pone columnas de priority al frente; el resto a continuación."""
+            frame = _dedup_frame(frame)
+            pri  = [c for c in priority if c in frame.columns]
+            rest = [c for c in frame.columns if c not in set(pri)]
+            return frame[pri + rest]
+
+        def _consolidar_duplicados(frame):
+            """Para cada par col / col.1: col = coalesce(col, col.1); elimina col.1.
+            Aplica también para pares con sufijos .2, .3, etc."""
+            frame = _dedup_frame(frame)
+            cols = frame.columns.tolist()
+            cols_eliminar = []
+            for c in cols:
+                # Detectar sufijos .N (enteros)
+                parts = c.rsplit('.', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    base = parts[0]
+                    if base in cols and c not in cols_eliminar:
+                        # Consolidar: conservar valor del base si existe, sino usar la versión .N
+                        frame[base] = frame[base].where(frame[base].notna(), frame[c])
+                        cols_eliminar.append(c)
+            if cols_eliminar:
+                frame = frame.drop(columns=cols_eliminar, errors='ignore')
+            return frame
 
         def _add_equipo_semana(frame):
             frame = frame.copy()
@@ -2436,109 +2472,57 @@ with tab_export:
                 frame['Semana'] = frame['semana'].apply(lambda x: _sem_label(x, _sem_map))
             return frame
 
-        def _dedup_frame(frame):
-            """Elimina columnas con nombre duplicado (conserva la primera ocurrencia)."""
-            if frame.columns.duplicated().any():
-                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
-            return frame
+        # ── HOJA 1: Entrevistas (hogar) ── raw + consolidado + Semana + Equipo ──
+        _ent = df.copy()
+        _ent = _consolidar_duplicados(_ent)
+        _ent = _add_equipo_semana(_ent)
+        hoja_entrevistas = _reorder(_ent, ['Semana','Equipo','encuestador',
+                                            'start','end','_id','_uuid','_submission_time'])
 
-        def _reorder(frame, priority):
-            """Pone columnas priority al frente; el resto a continuación. Seguro con dups."""
-            frame = _dedup_frame(frame)
-            pri = [c for c in priority if c in frame.columns]
-            rest = [c for c in frame.columns if c not in set(pri)]
-            return frame[pri + rest]
-
-        def _renombrar_pares_duplicados(frame):
-            """Para cada par col / col.1: renombra col → col - Embarazada, col.1 → col - Lactante."""
-            frame = _dedup_frame(frame)
-            cols = frame.columns.tolist()
-            rename_map = {}
-            for c in cols:
-                if c.endswith('.1'):
-                    base = c[:-2]
-                    if base in cols and base not in rename_map:
-                        rename_map[base] = f"{base} - Embarazada"
-                        rename_map[c]    = f"{base} - Lactante"
-            frame = frame.rename(columns=rename_map)
-            return _dedup_frame(frame)
-
-        # ── HOJA 1: Entrevistas (hogar) ── todas las columnas, pares con sufijo ──
-        _ent = _add_equipo_semana(df.copy())
-        _ent = _renombrar_pares_duplicados(_ent)
-        _ent = _ent.rename(columns={
-            'encuestador':   'Encuestador',
-            '__version__':   'Versión de formulario',
-        })
-        hoja_entrevistas = _reorder(_ent, ['start','end','Semana','Encuestador','Equipo'])
-
-        # ── HOJA 2: Niños evaluados ── TODAS las columnas KoBo ────────────────
-        _ninos_ev = _add_equipo_semana(ninos.copy())
+        # ── HOJA 2: Niños evaluados ── raw + Semana + Equipo (de hogar) ──────
+        _ninos_ev = ninos.copy()
         _ninos_ev = _dedup_frame(_ninos_ev)
-        if '_submission_id' in _ninos_ev.columns:
-            _ninos_ev = _ninos_ev.rename(columns={'_submission_id': '_submission__id'})
-        _ninos_ev = _ninos_ev.rename(columns={
-            'encuestador': 'Encuestador',
-            '__version__': 'Versión de formulario',
-        })
-        hoja_ninos_eval = _reorder(_ninos_ev, ['_submission__id','Semana','Encuestador','Equipo',
-                                                'fecha_dia','Municipio','distrito_nombre',
-                                                'canton_nombre','unidad_nombre','nombre','telefono'])
+        _ninos_ev = _add_equipo_semana(_ninos_ev)
+        # _submission_id es la llave de conexión al hogar → mantenerla al frente
+        hoja_ninos_eval = _reorder(_ninos_ev, ['_submission_id','Semana','Equipo',
+                                                'encuestador','fecha_dia','Municipio',
+                                                'distrito_nombre','canton_nombre',
+                                                'unidad_nombre','nombre','telefono'])
 
-        # ── HOJA 3: Niños + Hogar ── 1 fila x niño, cols hogar prefijadas ──────
-        # Preparar subconjunto del hogar con _hogar_id / _hogar_uuid
-        _hogar_sub = df.copy()
-        if '_id' in _hogar_sub.columns:
-            _hogar_sub['_hogar_id'] = _hogar_sub['_id']
-        if '_uuid' in _hogar_sub.columns:
-            _hogar_sub['_hogar_uuid'] = _hogar_sub['_uuid']
-        # Prefijar todas las columnas con "Hogar - " (excepto _hogar_id/_hogar_uuid que son las llaves)
-        _no_prefix = {'_hogar_id', '_hogar_uuid'}
-        _hogar_sub = _hogar_sub.rename(columns={
-            c: f"Hogar - {c}" for c in _hogar_sub.columns if c not in _no_prefix
-        })
-        _hogar_sub = _renombrar_pares_duplicados(_hogar_sub)  # también renombrar pares en hogar
+        # ── HOJA 3: Niños + Hogar ── ninos con contexto del hogar anexado ────
+        # Solo columnas clave del hogar para no duplicar todo
+        _ctx_cols = [c for c in ['_id','fecha_dia','semana','encuestador','perfil',
+                                   'Municipio','distrito_nombre','canton_nombre',
+                                   'unidad_nombre','nombre','telefono'] if c in df.columns]
+        _hogar_ctx = df[_ctx_cols].copy()
+        _hogar_ctx = _consolidar_duplicados(_hogar_ctx)
 
-        _nh_ninos = ninos.copy()
-        if '_submission_id' in _nh_ninos.columns:
-            _nh_ninos = _nh_ninos.rename(columns={'_submission_id': '_submission__id'})
-        # Merge: ninos._submission__id = hogar._hogar_id (evita conflicto con _id)
-        _nh = _nh_ninos.merge(_hogar_sub, left_on='_submission__id', right_on='_hogar_id', how='left')
+        _nh = ninos.copy()
+        _nh = _dedup_frame(_nh)
+        if '_submission_id' in _nh.columns:
+            _nh = _nh.merge(
+                _hogar_ctx.rename(columns={c: f'hogar_{c}' for c in _hogar_ctx.columns if c != '_id'}),
+                left_on='_submission_id', right_on='_id', how='left'
+            )
         _nh = _dedup_frame(_nh)
         _nh = _add_equipo_semana(_nh)
-        _nh = _nh.rename(columns={'encuestador': 'Encuestador'})
-        _nh = _dedup_frame(_nh)
+        hoja_ninos_hogar = _reorder(_nh, ['_submission_id','_id','Semana','Equipo'])
 
-        # Orden: _hogar_id, _hogar_uuid primero, luego cols nino, luego Hogar -
-        _nh_pri  = [c for c in ['_hogar_id','_hogar_uuid','_submission__id','Semana','Equipo','Encuestador']
-                    if c in _nh.columns]
-        _nh_set  = set(_nh_pri)
-        _nh_hogar = sorted([c for c in _nh.columns if c.startswith('Hogar - ')])
-        _nh_hogar_set = set(_nh_hogar)
-        _nh_nino_cols = [c for c in _nh.columns if c not in _nh_set and c not in _nh_hogar_set]
-        hoja_ninos_hogar = _nh[_nh_pri + _nh_nino_cols + _nh_hogar]
-
-        # ── HOJA 4: Registros (todo junto) ────────────────────────────────────
-        _TIPO_PERFIL = {
-            **{p: 'Mujer embarazada' for p in PERFILES_EMBARAZADA},
-            **{p: 'Madre lactante'   for p in PERFILES_LACTANTE},
-        }
-
+        # ── HOJA 4: Registros (todo junto) ── niños + maternas en una sola tabla ──
         # Niños
-        _reg_n = _add_equipo_semana(ninos.copy())
+        _reg_n = ninos.copy()
         _reg_n = _dedup_frame(_reg_n)
-        if '_submission_id' in _reg_n.columns:
-            _reg_n = _reg_n.rename(columns={'_submission_id': 'ID_encuesta_hogar'})
-        _reg_n = _reg_n.rename(columns={'encuestador': 'Encuestador'})
-        _reg_n.insert(0, 'Tipo de registro', 'Niño/a evaluado(a)')
+        _reg_n = _add_equipo_semana(_reg_n)
+        _reg_n.insert(0, 'tipo_registro', 'nino')
 
-        # Maternas
+        # Maternas (del hogar)
         if 'perfil' in df.columns:
             _df_mat = df[df['perfil'].isin(PERFILES_MATERNAS)].copy()
-            _df_mat = _df_mat.rename(columns={'_id': 'ID_encuesta_hogar', 'encuestador': 'Encuestador'})
+            _df_mat = _consolidar_duplicados(_df_mat)
             _df_mat = _add_equipo_semana(_df_mat)
-            _df_mat['Tipo de registro'] = _df_mat['perfil'].map(_TIPO_PERFIL).fillna(_df_mat['perfil'])
-            _df_mat = _renombrar_pares_duplicados(_df_mat)
+            _df_mat.insert(0, 'tipo_registro',
+                           _df_mat['perfil'].apply(
+                               lambda p: 'embarazada' if p in PERFILES_EMBARAZADA else 'lactante'))
             _reg_mat = _df_mat
         else:
             _reg_mat = pd.DataFrame()
@@ -2547,37 +2531,33 @@ with tab_export:
         _reg_adic = pd.DataFrame()
         if df_adic_raw is not None and not df_adic_raw.empty:
             _a = df_adic_raw.copy()
-            if '_submission__id' in _a.columns:
-                _a = _a.rename(columns={'_submission__id': 'ID_encuesta_hogar'})
-            _a.insert(0, 'Tipo de registro', 'Niño/a adicional')
+            _a = _dedup_frame(_a)
+            _a.insert(0, 'tipo_registro', 'nino_adicional')
             _reg_adic = _a
 
         hoja_registros = pd.concat([_reg_n, _reg_mat, _reg_adic], ignore_index=True)
-        _sort_cols = [c for c in ['fecha_dia','Encuestador'] if c in hoja_registros.columns]
-        if _sort_cols:
-            hoja_registros = hoja_registros.sort_values(_sort_cols, na_position='last')
+        _srt = [c for c in ['fecha_dia','encuestador'] if c in hoja_registros.columns]
+        if _srt:
+            hoja_registros = hoja_registros.sort_values(_srt, na_position='last')
 
         # ── HOJA 5: Niños adicionales ─────────────────────────────────────────
         if df_adic_raw is not None and not df_adic_raw.empty:
-            _adic_clean = df_adic_raw.copy()
-            if '_submission__id' in _adic_clean.columns:
-                _adic_clean = _adic_clean.rename(columns={'_submission__id': 'ID_encuesta_hogar'})
-            hoja_adic = _adic_clean
+            hoja_adic = _dedup_frame(df_adic_raw.copy())
         else:
             hoja_adic = pd.DataFrame()
 
         # ── HOJA 6: Equipo de campo ───────────────────────────────────────────
         hoja_equipo = DF_EQUIPOS[['Equipo','Zona','Nombre','Rol']].copy().rename(columns={
-            'Nombre': 'Encuestador/a', 'Zona': 'Municipio asignado'
+            'Nombre': 'encuestador', 'Zona': 'zona_asignada'
         })
 
         return {
-            'Registros (todo junto)': hoja_registros,
-            'Equipo de campo':        hoja_equipo,
-            'Niños + Hogar':          hoja_ninos_hogar,
             'Entrevistas (hogar)':    hoja_entrevistas,
             'Niños evaluados':        hoja_ninos_eval,
+            'Niños + Hogar':          hoja_ninos_hogar,
+            'Registros (todo junto)': hoja_registros,
             'Niños adicionales':      hoja_adic,
+            'Equipo de campo':        hoja_equipo,
         }
 
     try:
