@@ -2433,87 +2433,163 @@ with tab_export:
                 frame['Semana'] = frame['semana'].apply(lambda x: _sem_label(x, _sem_map))
             return frame
 
-        # ── HOJA 1: Entrevistas (hogar) ───────────────────────────────────────
+        # Columnas clínicas de niños (usadas en varias hojas)
+        _col_nombre_nino = '¿Cuál es el nombre del niño/a?'
+        _clin_front = [c for c in [
+            _col_nombre_nino, 'Sexo', 'Fecha de nacimiento del niño a evaluar', 'edad_txt',
+            'peso_nino', 'talla_nino', 'muac',
+            '¿Cuál es el peso en Kg del niño/a?', '¿Cuál es la talla en cm del niño/a?',
+            'Medida del perímetro braquial en cm',
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?',
+            '¿Cuál es el diagnóstico nutricional de peso edad?',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+            'Diagnóstico nutricional según perímetro braquial',
+            '¿Se brindó referencia?',
+            '¿Se le brindó consejería a niños y niñas?',
+            '¿Se le brindó consejería a la madre embarazada, lactante o adulto/a responsable?',
+        ] if c in ninos.columns]
+
+        # ── HOJA 1: Entrevistas (hogar) ── columnas consolidadas y limpias ──
         _ent = _add_equipo_semana(df.copy())
-        # _id es la llave para hacer JOIN con ID_encuesta_hogar en "Niños evaluados"
-        _ent_cols_front = ['_id','fecha_dia','Semana','encuestador','Equipo','Municipio',
-                           'distrito_nombre','canton_nombre','nombre','perfil']
-        _ent_cols_front = [c for c in _ent_cols_front if c in _ent.columns]
-        _ent_rest = [c for c in _ent.columns if c not in _ent_cols_front
-                     and not c.startswith('hfc_') and c not in ('semana','mes','start','end',
-                     'duracion_min','fecha_ent','sabe_leer','telefono')]
-        hoja_entrevistas = _ent[_ent_cols_front + _ent_rest].rename(columns={
-            '_id':             'ID_encuesta_hogar',   # llave → ID_encuesta_hogar en Niños evaluados
-            'fecha_dia':       'Fecha de la entrevista',
-            'encuestador':     'Encuestador',
-            'distrito_nombre': 'Distrito',
-            'canton_nombre':   'Cantón',
-            'nombre':          'Nombre persona entrevistada',
-            'perfil':          'Perfil',
+
+        # Consolidar columnas duplicadas del KoBo (versión 1 embarazada / versión 2 lactante)
+        def _coalesce(frame, col_a, col_b, out=None):
+            """Combina dos columnas en una sola (col_a prioritaria, col_b como fallback)."""
+            out = out or col_a
+            a = frame[col_a] if col_a in frame.columns else pd.Series(dtype='object', index=frame.index)
+            b = frame[col_b] if col_b in frame.columns else pd.Series(dtype='object', index=frame.index)
+            frame[out] = a.fillna(b)
+            return frame
+
+        _ent = _coalesce(_ent, 'Diagnóstico nutricional',  'Diagnóstico nutricional.1',    'dx_nutricional_madre')
+        _ent = _coalesce(_ent, '¿Ha asistido o está en control prenatal?', '¿Ha asistido o está en control prenatal?.1', 'control_prenatal')
+        _ent = _coalesce(_ent, '¿Qué tipo de consejería se le brindó?', '¿Qué tipo de consejería se le brindó?.1', 'tipo_consejeria')
+        _ent = _coalesce(_ent, '¿Se atendieron personas adicionales?', '¿Se atendieron personas adicionales?.1', 'personas_adicionales')
+        _ent = _coalesce(_ent, 'Observaciones generales', 'Observaciones generales.1', 'observaciones')
+        # Lactancia (solo en perfil lactante)
+        _ent = _coalesce(_ent, '¿Actualmente está amamantando a su bebé?', '¿Actualmente está amamantando a su bebé?.1', 'amamantando')
+        _ent = _coalesce(_ent, '¿Su bebé es menor de 6 meses?', '¿Su bebé es menor de 6 meses?.1', 'bebe_menor_6m')
+        _ent = _coalesce(_ent, '¿Ha recibido orientación sobre lactancia materna en los últimos tres meses?',
+                                '¿Ha recibido orientación sobre lactancia materna en los últimos tres meses?.1', 'orientacion_lactancia')
+        _ent = _coalesce(_ent, '¿Asiste a controles postnatales o de seguimiento de su bebé en la Unidad de Salud?',
+                                '¿Asiste a controles postnatales o de seguimiento de su bebé en la Unidad de Salud?.1', 'controles_postnatales')
+
+        # Columnas finales ordenadas — sólo las útiles, consolidadas
+        _ent_final = [c for c in [
+            '_id', 'fecha_dia', 'Semana', 'encuestador', 'Equipo',
+            'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+            'nombre', 'perfil', 'telefono',
+            # Datos materna
+            'peso', 'talla', 'imc', 'eg_sem',
+            'dx_nutricional_madre', 'control_prenatal',
+            # Consejería y referencia
+            'tipo_consejeria', 'consejeria', 'referencia',
+            # Lactancia
+            'amamantando', 'bebe_menor_6m', 'orientacion_lactancia', 'controles_postnatales',
+            # Otros
+            'personas_adicionales', 'observaciones',
+            # Geo detalle
+            '¿En qué caserío vive?',
+            # Form info
+            '_uuid', '_submission_time',
+        ] if c in _ent.columns]
+
+        hoja_entrevistas = _ent[_ent_final].rename(columns={
+            '_id':                   'ID_encuesta_hogar',
+            'fecha_dia':             'Fecha de la entrevista',
+            'encuestador':           'Encuestador',
+            'distrito_nombre':       'Distrito',
+            'canton_nombre':         'Cantón',
+            'unidad_nombre':         'Unidad de salud',
+            'nombre':                'Nombre persona entrevistada',
+            'perfil':                'Perfil',
+            'telefono':              'Teléfono',
+            'peso':                  'Peso madre (kg)',
+            'talla':                 'Talla madre (m)',
+            'imc':                   'IMC madre',
+            'eg_sem':                'Edad gestacional (sem)',
+            'dx_nutricional_madre':  'Diagnóstico nutricional madre',
+            'control_prenatal':      'Control prenatal',
+            'tipo_consejeria':       'Tipo de consejería',
+            'consejeria':            'Consejería brindada',
+            'referencia':            'Referencia brindada',
+            'amamantando':           'Amamantando',
+            'bebe_menor_6m':         'Bebé menor 6 meses',
+            'orientacion_lactancia': 'Orientación lactancia',
+            'controles_postnatales': 'Controles postnatales',
+            'personas_adicionales':  'Personas adicionales atendidas',
+            'observaciones':         'Observaciones',
+            '¿En qué caserío vive?': 'Caserío',
+            '_uuid':                 'UUID KoBo',
+            '_submission_time':      'Fecha envío KoBo',
         })
 
-        # ── HOJA 2: Niños evaluados (datos clínicos) ──────────────────────────
-        # Incluye metadatos de vínculo al hogar: ID encuesta + nombre madre + fecha + zona
-        _ninos_clin = ninos.copy()
-        _col_nombre_nino = '¿Cuál es el nombre del niño/a?'
-        # Metadatos que conectan al niño con su hogar en "Entrevistas (hogar)"
-        _meta_cols = [c for c in ['_submission_id','fecha_dia','encuestador','Municipio',
-                                   'distrito_nombre','canton_nombre','nombre'] if c in _ninos_clin.columns]
-        _clin_front = [c for c in [_col_nombre_nino,'Sexo','Fecha de nacimiento del niño a evaluar',
-                                    'edad_txt','¿Cuál es el peso en Kg del niño/a?',
-                                    '¿Cuál es la talla en cm del niño/a?',
-                                    'Medida del perímetro braquial en cm',
-                                    '¿Cuál es el diagnóstico nutricional de la talla y edad?',
-                                    '¿Cuál es el diagnóstico nutricional de peso edad?',
-                                    '¿Cuál es el diagnóstico nutricional del peso y la talla?',
-                                    'Diagnóstico nutricional según perímetro braquial',
-                                    '¿Se brindó referencia?',
-                                    '¿Se le brindó consejería a niños y niñas?'] if c in _ninos_clin.columns]
-        hoja_ninos_eval = _ninos_clin[_meta_cols + _clin_front].rename(columns={
-            '_submission_id':  'ID_encuesta_hogar',   # enlace a _id en Entrevistas (hogar)
+        # ── HOJA 2: Niños evaluados ── máxima info + vínculo al hogar ──
+        _ninos_ev = _add_equipo_semana(ninos.copy())
+        _meta_ninos = [c for c in [
+            '_submission_id', 'fecha_dia', 'Semana', 'encuestador', 'Equipo',
+            'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+            'nombre', 'telefono',
+        ] if c in _ninos_ev.columns]
+        hoja_ninos_eval = _ninos_ev[_meta_ninos + _clin_front].rename(columns={
+            '_submission_id':  'ID_encuesta_hogar',
             'fecha_dia':       'Fecha',
             'encuestador':     'Encuestador',
             'distrito_nombre': 'Distrito',
             'canton_nombre':   'Cantón',
+            'unidad_nombre':   'Unidad de salud',
             'nombre':          'Nombre madre/responsable',
+            'telefono':        'Teléfono',
             'edad_txt':        'Edad',
+            'peso_nino':       'Peso niño/a (kg) — corregido',
+            'talla_nino':      'Talla niño/a (cm) — corregida',
+            'muac':            'MUAC (cm)',
         })
 
-        # ── HOJA 3: Niños + Hogar (1 fila x niño) ────────────────────────────
+        # ── HOJA 3: Niños + Hogar (1 fila x niño, con ID) ─────────────────────
         _nh = _add_equipo_semana(ninos.copy())
-        _nh_front = ['fecha_dia','Semana','encuestador','Equipo','Municipio',
-                     'distrito_nombre','canton_nombre']
-        _nh_front = [c for c in _nh_front if c in _nh.columns]
-        _nh_clin  = [c for c in _clin_front if c in _nh.columns]
-        hoja_ninos_hogar = _nh[_nh_front + _nh_clin].rename(columns={
+        _nh_cols = [c for c in [
+            '_submission_id', 'fecha_dia', 'Semana', 'encuestador', 'Equipo',
+            'Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre',
+            'nombre', 'telefono',
+        ] if c in _nh.columns] + _clin_front
+        hoja_ninos_hogar = _nh[[c for c in _nh_cols if c in _nh.columns]].rename(columns={
+            '_submission_id':  'ID_encuesta_hogar',
             'fecha_dia':       'Fecha de la entrevista',
             'encuestador':     'Encuestador',
             'distrito_nombre': 'Distrito',
             'canton_nombre':   'Cantón',
+            'unidad_nombre':   'Unidad de salud',
+            'nombre':          'Nombre madre/responsable',
+            'telefono':        'Teléfono',
             'edad_txt':        'Edad',
+            'peso_nino':       'Peso niño/a (kg) — corregido',
+            'talla_nino':      'Talla niño/a (cm) — corregida',
+            'muac':            'MUAC (cm)',
         })
         hoja_ninos_hogar.insert(0, 'Tipo de registro', 'Niño/a evaluado(a)')
 
-        # ── HOJA 4: Registros (todo junto) ───────────────────────────────────
+        # ── HOJA 4: Registros (todo junto) ────────────────────────────────────
+        _TIPO_PERFIL = {
+            **{p: 'Mujer embarazada' for p in PERFILES_EMBARAZADA},
+            **{p: 'Madre lactante'   for p in PERFILES_LACTANTE},
+        }
         # Niños
-        _reg_cols = ['fecha_dia','semana','encuestador','Municipio','distrito_nombre',
-                     'canton_nombre'] + _clin_front
-        _reg_cols = [c for c in _reg_cols if c in ninos.columns]
-        _reg_ninos = _add_equipo_semana(ninos[_reg_cols].copy())
+        _reg_ninos = _add_equipo_semana(ninos[[c for c in [
+            '_submission_id','fecha_dia','semana','encuestador','Municipio',
+            'distrito_nombre','canton_nombre','nombre',
+        ] + _clin_front if c in ninos.columns]].copy())
         _reg_ninos.insert(0, 'Tipo de registro', 'Niño/a evaluado(a)')
 
-        # Maternas (embarazadas + lactantes)
-        _TIPO_PERFIL = {
-            **{p: 'Mujer embarazada (registro de embarazo)' for p in PERFILES_EMBARAZADA},
-            **{p: 'Madre lactante (registro de lactancia)'  for p in PERFILES_LACTANTE},
-        }
+        # Maternas
         if 'perfil' in df.columns:
             _df_mat = df[df['perfil'].isin(PERFILES_MATERNAS)].copy()
             _df_mat = _add_equipo_semana(_df_mat)
             _df_mat['Tipo de registro'] = _df_mat['perfil'].map(_TIPO_PERFIL).fillna(_df_mat['perfil'])
-            _mat_cols = ['Tipo de registro','fecha_dia','Semana','encuestador','Equipo',
-                         'Municipio','distrito_nombre','canton_nombre','nombre','perfil']
-            _mat_cols = [c for c in _mat_cols if c in _df_mat.columns]
+            _mat_cols = [c for c in ['Tipo de registro','_id','fecha_dia','Semana','encuestador','Equipo',
+                         'Municipio','distrito_nombre','canton_nombre','unidad_nombre',
+                         'nombre','perfil','telefono','peso','talla','imc',
+                         'consejeria','referencia'] if c in _df_mat.columns]
             _reg_mat = _df_mat[_mat_cols]
         else:
             _reg_mat = pd.DataFrame()
@@ -2522,18 +2598,30 @@ with tab_export:
         _reg_adic = pd.DataFrame()
         if df_adic_raw is not None and not df_adic_raw.empty:
             _reg_adic = df_adic_raw.copy()
-            _reg_adic.insert(0, 'Tipo de registro', 'Niño/a adicional (no evaluado formalmente)')
+            _reg_adic.insert(0, 'Tipo de registro', 'Niño/a adicional')
 
         hoja_registros = pd.concat([_reg_ninos, _reg_mat, _reg_adic], ignore_index=True)
         hoja_registros = hoja_registros.sort_values(['fecha_dia','encuestador'], na_position='last')
         hoja_registros = hoja_registros.rename(columns={
+            '_submission_id':  'ID_encuesta_hogar',
+            '_id':             'ID_encuesta_hogar',
             'fecha_dia':       'Fecha de la entrevista',
             'encuestador':     'Encuestador',
             'distrito_nombre': 'Distrito',
             'canton_nombre':   'Cantón',
+            'unidad_nombre':   'Unidad de salud',
             'nombre':          'Nombre persona entrevistada',
             'perfil':          'Perfil',
+            'telefono':        'Teléfono',
             'edad_txt':        'Edad',
+            'peso_nino':       'Peso niño/a (kg) — corregido',
+            'talla_nino':      'Talla niño/a (cm) — corregida',
+            'muac':            'MUAC (cm)',
+            'peso':            'Peso madre (kg)',
+            'talla':           'Talla madre (m)',
+            'imc':             'IMC madre',
+            'consejeria':      'Consejería brindada',
+            'referencia':      'Referencia brindada',
         })
 
         # ── HOJA 5: Niños adicionales ─────────────────────────────────────────
