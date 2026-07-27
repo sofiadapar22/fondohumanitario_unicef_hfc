@@ -293,6 +293,20 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
     ninos['talla_nino'] = pd.to_numeric(ninos.get('¿Cuál es la talla en cm del niño/a?'), errors='coerce')
     ninos['muac']       = pd.to_numeric(ninos.get('Medida del perímetro braquial en cm'),  errors='coerce')
 
+    # Corrección de fecha: 3 registros con fecha_dia 2026-05-18 son errores de dedo (mes 05→06).
+    # Confirmado por _submission_time (jun/jul 2026) y nombres: Iker/Lucia Palacios Fuentes, Liam Argueta Lovo.
+    if 'fecha_dia' in ninos.columns and '¿Cuál es el nombre del niño/a?' in ninos.columns:
+        _nombres_corr = ['Iker Gustavo Palacios Fuentes', 'Lucia Sophia Palacio Fuentes', 'Liam Jose Argueta Lovo']
+        _mask_fecha_corr = (
+            ninos['¿Cuál es el nombre del niño/a?'].isin(_nombres_corr) &
+            (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
+        )
+        ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
+        if 'semana' in ninos.columns:
+            ninos.loc[_mask_fecha_corr, 'semana'] = pd.Timestamp('2026-06-15')  # semana correspondiente
+        if 'mes' in ninos.columns:
+            ninos.loc[_mask_fecha_corr, 'mes'] = pd.Period('2026-06', 'M')
+
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
     mask_talla_err = ninos['talla_nino'] > 200
@@ -2877,19 +2891,27 @@ with tab_unicef:
     if not _meses_disp:
         st.warning("No hay datos cargados.")
     else:
-        _mes_sel = st.selectbox("Mes de reporte", _meses_disp, index=len(_meses_disp)-1, key='unicef_mes')
+        _meses_str = [str(m) for m in _meses_disp]
+        _meses_sel_str = st.multiselect(
+            "Meses de reporte (podés seleccionar varios)",
+            _meses_str,
+            default=[_meses_str[-1]],
+            key='unicef_mes'
+        )
+        if not _meses_sel_str:
+            st.warning("Seleccioná al menos un mes.")
+            st.stop()
+        _meses_sel = [p for p in _meses_disp if str(p) in _meses_sel_str]
 
         with st.expander("🔍 Debug — valores en datos", expanded=False):
             st.write("**Meses disponibles:**", _meses_disp)
-            st.write("**Mes seleccionado:**", _mes_sel)
+            st.write("**Meses seleccionados:**", _meses_sel)
             if not _df_u.empty:
                 _dist_vals_m = _df_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _df_u.columns else []
                 st.write("**Municipio (maternas) — valores únicos:**", sorted(_dist_vals_m))
-                st.write(f"**Total maternas en mes {_mes_sel}:**", len(_df_u[_df_u['mes'] == _mes_sel]) if 'mes' in _df_u.columns else 'n/a')
             if not _ninos_u.empty:
                 _dist_vals_n = _ninos_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _ninos_u.columns else []
                 st.write("**Municipio (niños) — valores únicos:**", sorted(_dist_vals_n))
-                st.write(f"**Total niños en mes {_mes_sel}:**", len(_ninos_u[_ninos_u['mes'] == _mes_sel]) if 'mes' in _ninos_u.columns else 'n/a')
             st.write("**DISTRITOS_UNICEF:**", DISTRITOS_UNICEF)
 
         INDICADORES = [
@@ -2915,7 +2937,8 @@ with tab_unicef:
                     _ids_con_ninos = set(_ninos_u[_col_id].dropna().astype(int))
                     break
 
-        for ind_key, ind_label in INDICADORES:
+        for _mes_sel in _meses_sel:
+          for ind_key, ind_label in INDICADORES:
             for dist in DISTRITOS_UNICEF:
                 if not _df_u.empty and 'mes' in _df_u.columns and _dist_col_m in _df_u.columns:
                     _mm = _df_u[(_df_u['mes'] == _mes_sel) & (_df_u[_dist_col_m] == dist)]
@@ -2983,6 +3006,7 @@ with tab_unicef:
                     total, bd = 0, {}
 
                 row = {
+                    'Mes':       str(_mes_sel),
                     'Indicador': ind_label,
                     'Distrito':  DIST_LABEL.get(dist, dist),
                     'Total':     total,
@@ -2994,6 +3018,7 @@ with tab_unicef:
 
                 # Vista resumida para la tabla en pantalla
                 rows_tabla.append({
+                    'Mes':       str(_mes_sel),
                     'Indicador': ind_key,
                     'Distrito':  DIST_LABEL.get(dist, dist),
                     'Total':     total,
@@ -3004,26 +3029,42 @@ with tab_unicef:
         df_tabla = pd.DataFrame(rows_tabla)
         df_export = pd.DataFrame(rows_export)
 
-        # ── Vista en pantalla: pivot por indicador ────────────────────────────
-        for ind_key, ind_label in INDICADORES:
-            st.markdown(f"**{ind_key} — {ind_label[:80]}{'…' if len(ind_label)>80 else ''}**")
-            sub = df_tabla[df_tabla['Indicador']==ind_key].drop(columns='Indicador').set_index('Distrito')
-            # Solo mostrar grupos con algún dato
-            cols_con_datos = ['Total'] + [c for c in AGE_GROUPS if sub[c].sum() > 0]
-            st.dataframe(sub[cols_con_datos], use_container_width=True)
+        # ── Vista en pantalla: por mes y por indicador ───────────────────────
+        for _mes_v in _meses_sel:
+            st.markdown(f"#### 📅 {_mes_v}")
+            _sub_mes = df_tabla[df_tabla['Mes'] == str(_mes_v)]
+            for ind_key, ind_label in INDICADORES:
+                st.markdown(f"**{ind_key} — {ind_label[:80]}{'…' if len(ind_label)>80 else ''}**")
+                sub = _sub_mes[_sub_mes['Indicador']==ind_key].drop(columns=['Indicador','Mes']).set_index('Distrito')
+                cols_con_datos = ['Total'] + [c for c in AGE_GROUPS if sub[c].sum() > 0]
+                st.dataframe(sub[cols_con_datos], use_container_width=True)
             st.markdown("")
 
         # ── Descarga Excel en formato UNICEF ─────────────────────────────────
         st.markdown("---")
-        st.markdown("### ⬇️ Descargar en formato Herramienta de Reportería UNICEF")
+        _label_meses = '+'.join(str(m) for m in _meses_sel)
+        st.markdown(f"### ⬇️ Descargar en formato Herramienta de Reportería UNICEF — {_label_meses}")
 
         _MATRIZ_PATH = str(_resolve('4. Matriz de Indicadores - FUSAL.xlsx'))
         _matriz_existe = os.path.isfile(_MATRIZ_PATH)
 
+        # ── Hoja resumen acumulado de tamizados ───────────────────────────────
+        _num_cols = ['Total','Nuevos'] + [f'Niños {g}' for g in AGE_GROUPS] + [f'Niñas {g}' for g in AGE_GROUPS]
+        _tam_label = next((idl for ik, idl in INDICADORES if ik == 'TAM'), None)
+        _df_tam_all = df_export[df_export['Indicador'] == _tam_label].copy() if _tam_label else pd.DataFrame()
+
+        if not _df_tam_all.empty:
+            _resumen = _df_tam_all.groupby('Distrito')[_num_cols].sum().reset_index()
+            _total_row = _resumen[_num_cols].sum().to_frame().T
+            _total_row['Distrito'] = 'TOTAL'
+            _resumen = pd.concat([_resumen, _total_row[['Distrito'] + _num_cols]], ignore_index=True)
+        else:
+            _resumen = pd.DataFrame()
+
         if _matriz_existe:
-            # Llenar la matriz original
-            import shutil as _shutil
             from openpyxl import load_workbook as _load_wb
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
 
             _buf_matriz = io.BytesIO()
             with open(_MATRIZ_PATH, 'rb') as _f:
@@ -3045,23 +3086,24 @@ with tab_unicef:
                 ('25-59a','M'):24,('25-59a','F'):25,
                 ('60+a','M'):26, ('60+a','F'):27,
             }
-            _DIST_INV = {v: k for k, v in DIST_LABEL.items()}
-            _export_idx = {(r['Indicador'], r['Distrito']): r for r in rows_export}
+            # índice: (indicador_label, mes_str, distrito) → fila de datos
+            _export_idx = {(r['Indicador'], r['Mes'], r['Distrito']): r for r in rows_export}
 
             for _row in _ws.iter_rows(min_row=9, max_row=260):
-                _ind = _row[2].value; _mes = str(_row[3].value) if _row[3].value else ''; _dist = _row[4].value
-                if not _ind or not _mes or not _dist: continue
-                if _mes != _mes_sel: continue
+                _ind = _row[2].value
+                _mes_cell = str(_row[3].value) if _row[3].value else ''
+                _dist = _row[4].value
+                if not _ind or not _mes_cell or not _dist: continue
+                if _mes_cell not in [str(m) for m in _meses_sel]: continue
                 if 'afirman' in str(_ind).lower() or 'mecanismo' in str(_ind).lower(): continue
 
-                # buscar en export_idx por indicador label + distrito
                 _key = None
                 for (ik, idl) in INDICADORES:
                     if idl == _ind or (ik == 'TAM' and 'tamizad' in _ind.lower()) \
                        or (ik == 'IYCF' and 'orientación' in _ind.lower() and 'lactante' in _ind.lower()) \
                        or (ik == 'REF' and 'referid' in _ind.lower()) \
                        or (ik == 'DESN' and 'con nutrición aguda' in _ind.lower()):
-                        _key = (idl, _dist)
+                        _key = (idl, _mes_cell, _dist)
                         break
                 if _key not in _export_idx: continue
 
@@ -3073,24 +3115,66 @@ with tab_unicef:
                     _row[_COL_MAP[(_g,'M')]-1].value = int(_rec.get(f'Niños {_g}', 0))
                     _row[_COL_MAP[(_g,'F')]-1].value = int(_rec.get(f'Niñas {_g}', 0))
 
+            # ── Hoja Resumen Tamizados ────────────────────────────────────────
+            if not _resumen.empty:
+                _ws_res = _wb.create_sheet('Resumen Tamizados')
+                _AZUL  = 'FF1F4E79'
+                _AZUL2 = 'FF2E75B6'
+                _BLANCO = 'FFFFFFFF'
+                _GRIS   = 'FFF2F2F2'
+
+                # Título
+                _ws_res['A1'] = f'Resumen Acumulado de Tamizados — {_label_meses}'
+                _ws_res['A1'].font = Font(bold=True, color=_BLANCO, size=12)
+                _ws_res['A1'].fill = PatternFill('solid', fgColor=_AZUL)
+                _ws_res.merge_cells(f'A1:{get_column_letter(len(_resumen.columns))}1')
+
+                # Encabezados
+                _headers = ['Municipio', 'Total', 'Nuevos'] + \
+                           [f'Niños {g}' for g in AGE_GROUPS] + \
+                           [f'Niñas {g}' for g in AGE_GROUPS]
+                for ci, h in enumerate(_headers, 1):
+                    c = _ws_res.cell(row=2, column=ci, value=h)
+                    c.font = Font(bold=True, color=_BLANCO, size=10)
+                    c.fill = PatternFill('solid', fgColor=_AZUL2)
+                    c.alignment = Alignment(horizontal='center', wrap_text=True)
+
+                # Datos
+                for ri, row_r in _resumen.iterrows():
+                    is_total = row_r['Distrito'] == 'TOTAL'
+                    for ci, col_r in enumerate(['Distrito'] + _num_cols, 1):
+                        val = row_r.get(col_r, 0)
+                        c = _ws_res.cell(row=ri+3, column=ci, value=val)
+                        c.fill = PatternFill('solid', fgColor=_AZUL if is_total else (_GRIS if ri % 2 == 0 else _BLANCO))
+                        c.font = Font(bold=is_total, color=_BLANCO if is_total else '000000', size=10)
+                        c.alignment = Alignment(horizontal='center' if ci > 1 else 'left')
+
+                # Ancho de columnas
+                _ws_res.column_dimensions['A'].width = 22
+                for ci in range(2, len(_headers)+1):
+                    _ws_res.column_dimensions[get_column_letter(ci)].width = 10
+
             _out_buf = io.BytesIO()
             _wb.save(_out_buf)
             _out_buf.seek(0)
             st.download_button(
-                f"⬇️ Herramienta de Reportería UNICEF — {_mes_sel} (.xlsx)",
+                f"⬇️ Herramienta de Reportería UNICEF — {_label_meses} (.xlsx)",
                 _out_buf,
-                f"Reporte_UNICEF_FUSAL_{_mes_sel}.xlsx",
+                f"Reporte_UNICEF_FUSAL_{_label_meses}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
-            # Si no hay matriz, descargar tabla simple
+            # Sin matriz: exportar tabla simple + hoja resumen
             _buf_simple = io.BytesIO()
-            df_export.to_excel(_buf_simple, index=False)
+            with pd.ExcelWriter(_buf_simple, engine='openpyxl') as _w:
+                df_export.to_excel(_w, sheet_name='Datos por mes', index=False)
+                if not _resumen.empty:
+                    _resumen.to_excel(_w, sheet_name='Resumen Tamizados', index=False)
             _buf_simple.seek(0)
             st.download_button(
-                f"⬇️ Datos para reporte UNICEF — {_mes_sel} (.xlsx)",
+                f"⬇️ Datos para reporte UNICEF — {_label_meses} (.xlsx)",
                 _buf_simple,
-                f"Reporte_UNICEF_FUSAL_{_mes_sel}.xlsx",
+                f"Reporte_UNICEF_FUSAL_{_label_meses}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
             st.info("💡 Para generar el Excel en formato exacto de UNICEF, sube el archivo `4. Matriz de Indicadores - FUSAL.xlsx` al repositorio.")
