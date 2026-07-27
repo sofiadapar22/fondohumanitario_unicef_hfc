@@ -302,7 +302,12 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
             (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
         )
         # Solo corregir fecha_dia — semana y mes vienen del registro padre (ya son de jun/jul)
-        ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
+        try:
+            ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
+        except Exception:
+            ninos.loc[_mask_fecha_corr, 'fecha_dia'] = '2026-06-18'
+        # Normalizar toda la columna a datetime para evitar tipos mixtos en groupby
+        ninos['fecha_dia'] = pd.to_datetime(ninos['fecha_dia'], errors='coerce')
 
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
