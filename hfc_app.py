@@ -303,9 +303,17 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
         )
         ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
         if 'semana' in ninos.columns:
-            ninos.loc[_mask_fecha_corr, 'semana'] = pd.Timestamp('2026-06-15')  # semana correspondiente
+            try:
+                ninos.loc[_mask_fecha_corr, 'semana'] = pd.Timestamp('2026-06-15')
+            except Exception:
+                ninos.loc[_mask_fecha_corr, 'semana'] = '2026-06-15'
         if 'mes' in ninos.columns:
-            ninos.loc[_mask_fecha_corr, 'mes'] = pd.Period('2026-06', 'M')
+            # mes puede ser Period o string según la versión de pandas/Arrow
+            try:
+                _mes_val = pd.Period('2026-06', 'M')
+                ninos.loc[_mask_fecha_corr, 'mes'] = _mes_val
+            except Exception:
+                ninos.loc[_mask_fecha_corr, 'mes'] = '2026-06'
 
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
