@@ -1321,6 +1321,8 @@ with tab_avance:
             diario_m = _dm.groupby('fecha_dia').size().reset_index(name='Maternas') if not _dm.empty else pd.DataFrame(columns=['fecha_dia','Maternas'])
         else:
             diario_m = pd.DataFrame(columns=['fecha_dia','Maternas'])
+        diario_n['fecha_dia'] = diario_n['fecha_dia'].astype(str)
+        diario_m['fecha_dia'] = diario_m['fecha_dia'].astype(str)
         diario = diario_n.merge(diario_m, on='fecha_dia', how='outer').fillna(0)
         diario['Total'] = diario['Niños'] + diario['Maternas']
         diario['fecha_dia'] = diario['fecha_dia'].astype(str)
