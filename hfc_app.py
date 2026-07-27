@@ -302,12 +302,11 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
             (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
         )
         # Solo corregir fecha_dia — semana y mes vienen del registro padre (ya son de jun/jul)
+        # La normalización global de fecha_dia ocurre después de construir_ninos()
         try:
             ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
         except Exception:
             ninos.loc[_mask_fecha_corr, 'fecha_dia'] = '2026-06-18'
-        # Normalizar toda la columna a datetime para evitar tipos mixtos en groupby
-        ninos['fecha_dia'] = pd.to_datetime(ninos['fecha_dia'], errors='coerce')
 
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
@@ -775,6 +774,13 @@ with st.sidebar:
         df = unificar(df_raw.copy(), dist_map, cant_map, us_map)
         df, n_corr = aplicar_correcciones(df, correcciones)
         ninos = construir_ninos(df_ninos_raw, df_sec3_raw, df, df_adic_raw)
+
+        # Normalizar fecha_dia a datetime en ambos dataframes para evitar
+        # errores de tipo mixto en groupby/merge con pandas 3.14 + Arrow backend
+        if 'fecha_dia' in df.columns:
+            df['fecha_dia'] = pd.to_datetime(df['fecha_dia'], errors='coerce')
+        if 'fecha_dia' in ninos.columns:
+            ninos['fecha_dia'] = pd.to_datetime(ninos['fecha_dia'], errors='coerce')
 
         st.markdown("**Filtros**")
         municipios = ['Todos'] + sorted(df['Municipio'].dropna().astype(str).unique().tolist())
