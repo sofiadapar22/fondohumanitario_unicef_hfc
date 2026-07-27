@@ -301,19 +301,8 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
             ninos['¿Cuál es el nombre del niño/a?'].isin(_nombres_corr) &
             (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
         )
+        # Solo corregir fecha_dia — semana y mes vienen del registro padre (ya son de jun/jul)
         ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
-        if 'semana' in ninos.columns:
-            try:
-                ninos.loc[_mask_fecha_corr, 'semana'] = pd.Timestamp('2026-06-15')
-            except Exception:
-                ninos.loc[_mask_fecha_corr, 'semana'] = '2026-06-15'
-        if 'mes' in ninos.columns:
-            # mes puede ser Period o string según la versión de pandas/Arrow
-            try:
-                _mes_val = pd.Period('2026-06', 'M')
-                ninos.loc[_mask_fecha_corr, 'mes'] = _mes_val
-            except Exception:
-                ninos.loc[_mask_fecha_corr, 'mes'] = '2026-06'
 
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
