@@ -2927,9 +2927,12 @@ with tab_unicef:
                     _mn = pd.DataFrame()
 
                 if ind_key == 'TAM':
-                    # Solo contar maternas SIN niños (las que tienen niños ya se cuentan a través de _mn)
-                    _mm_sin_ninos = _mm[~_mm['_id'].isin(_ids_con_ninos)] if not _mm.empty and '_id' in _mm.columns and _ids_con_ninos else _mm
-                    bd = _build_breakdown(_mm_sin_ninos, _mn)
+                    # Solo maternas (embarazadas + lactantes) — excluir padres, cuidadores y madres sin perfil materna
+                    _col_perfil_m = 'perfil' if 'perfil' in _mm.columns else ('Perfil de la persona entrevistada' if 'Perfil de la persona entrevistada' in _mm.columns else None)
+                    _mm_mat = _mm[_mm[_col_perfil_m].isin(PERFILES_MATERNAS)] if (_col_perfil_m and not _mm.empty) else _mm
+                    # Las maternas se cuentan SIEMPRE en columnas adultas, aunque traigan hijos
+                    # (el hijo se cuenta aparte en _mn; no hay doble conteo porque son personas distintas)
+                    bd = _build_breakdown(_mm_mat, _mn)
                     total = sum(bd.values())   # consistente con el desglose por edad
                 elif ind_key == 'IYCF':
                     # Solo consejería de niños
