@@ -794,8 +794,10 @@ with st.sidebar:
 
         fechas = sorted(df['fecha_dia'].dropna().unique())
         if fechas:
-            rango = st.date_input("Rango fechas", value=(fechas[0], fechas[-1]),
-                                  min_value=fechas[0], max_value=fechas[-1])
+            _f0 = pd.Timestamp(fechas[0]).date()
+            _f1 = pd.Timestamp(fechas[-1]).date()
+            rango = st.date_input("Rango fechas", value=(_f0, _f1),
+                                  min_value=_f0, max_value=_f1)
 
         # Aplicar filtros
         mask = pd.Series(True, index=df.index)
@@ -804,7 +806,7 @@ with st.sidebar:
         if sel_cant != 'Todos': mask &= df['canton_nombre'].astype(str)    == sel_cant
         if sel_enc  != 'Todos': mask &= df['encuestador'].astype(str)      == sel_enc
         if fechas and len(rango) == 2:
-            mask &= (df['fecha_dia'] >= rango[0]) & (df['fecha_dia'] <= rango[1])
+            mask &= (df['fecha_dia'] >= pd.Timestamp(rango[0])) & (df['fecha_dia'] <= pd.Timestamp(rango[1]))
         df_f = df[mask].copy()
 
         if not ninos.empty:
