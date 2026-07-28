@@ -302,11 +302,8 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
             (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
         )
         # Solo corregir fecha_dia — semana y mes vienen del registro padre (ya son de jun/jul)
-        # La normalización global de fecha_dia ocurre después de construir_ninos()
-        try:
-            ninos.loc[_mask_fecha_corr, 'fecha_dia'] = pd.Timestamp('2026-06-18')
-        except Exception:
-            ninos.loc[_mask_fecha_corr, 'fecha_dia'] = '2026-06-18'
+        # Se asigna string; la normalización global a datetime ocurre después de construir_ninos()
+        ninos.loc[_mask_fecha_corr, 'fecha_dia'] = '2026-06-18'
 
     # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
     # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
@@ -1327,11 +1324,9 @@ with tab_avance:
             diario_m = _dm.groupby('fecha_dia').size().reset_index(name='Maternas') if not _dm.empty else pd.DataFrame(columns=['fecha_dia','Maternas'])
         else:
             diario_m = pd.DataFrame(columns=['fecha_dia','Maternas'])
-        diario_n['fecha_dia'] = diario_n['fecha_dia'].astype(str)
-        diario_m['fecha_dia'] = diario_m['fecha_dia'].astype(str)
         diario = diario_n.merge(diario_m, on='fecha_dia', how='outer').fillna(0)
         diario['Total'] = diario['Niños'] + diario['Maternas']
-        diario['fecha_dia'] = diario['fecha_dia'].astype(str)
+        diario['fecha_dia'] = pd.to_datetime(diario['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d')
         st.bar_chart(diario.set_index('fecha_dia')[['Niños','Maternas']])
 
     # (Ver proyección completa en tab "Proyección & Escenarios")
