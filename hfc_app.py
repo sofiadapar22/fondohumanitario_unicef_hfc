@@ -1443,34 +1443,29 @@ with tab_escenarios:
 
         _fig_sem = go.Figure()
 
-        # Barras
+        # Barras — número dentro para no chocar con etiquetas de la línea
         _fig_sem.add_trace(go.Bar(
             name='Tamizados en la semana',
             x=_sw['semana_label'], y=_sw['Total'],
             marker_color='#3498db',
-            text=_sw['Total'], textposition='outside',
+            text=_sw['Total'], textposition='inside',
+            insidetextanchor='middle',
+            textfont=dict(color='white', size=12),
             yaxis='y1'
         ))
 
-        # Línea promedio diario — etiquetas alternadas para evitar traslape
-        _pos = ['top left' if i % 2 == 0 else 'top right' for i in range(len(_sw))]
+        # Línea promedio diario
         _fig_sem.add_trace(go.Scatter(
             name='Promedio diario (esa semana)',
             x=_sw['semana_label'], y=_sw['Prom. diario'],
-            mode='lines+markers',
+            mode='lines+markers+text',
+            text=[f"{v:.0f}/día" for v in _sw['Prom. diario']],
+            textposition=['top center' if i % 2 == 0 else 'bottom center' for i in range(len(_sw))],
+            textfont=dict(size=11, color='#27ae60'),
             line=dict(color='#2ecc71', width=2.5),
             marker=dict(size=8),
             yaxis='y2'
         ))
-        # Anotaciones separadas para no solapar
-        for i, row in _sw.iterrows():
-            _fig_sem.add_annotation(
-                x=row['semana_label'], y=row['Prom. diario'],
-                text=f"<b>{row['Prom. diario']:.0f}/día</b>",
-                showarrow=False, yref='y2',
-                yshift=14 if i % 2 == 0 else -18,
-                font=dict(size=11, color='#27ae60')
-            )
 
         # Línea horizontal tasa necesaria
         _fig_sem.add_hline(
@@ -1511,6 +1506,10 @@ with tab_escenarios:
     _equipos_zonas = DF_EQUIPOS[['Equipo','Zona']].drop_duplicates()
     for _, _er in _equipos_zonas.iterrows():
         _zona  = _er['Zona']
+        _eq_nm = _er['Equipo']
+        # Si el equipo tiene múltiples zonas, agregar la zona al label
+        _n_zonas_eq = (_equipos_zonas['Equipo'] == _eq_nm).sum()
+        _label = f"{_eq_nm} / {_zona}" if _n_zonas_eq > 1 else _eq_nm
         _meta  = METAS_ZONA.get(_zona, 0)
         _log_r = _actual_mun[_actual_mun['Municipio'] == _zona]['Logrados'].sum() if not _actual_mun.empty else 0
         _falt  = max(_meta - _log_r, 0)
@@ -1518,7 +1517,7 @@ with tab_escenarios:
         _nec_s = round(_falt / _sem_rest,  0) if _sem_rest  > 0 else 0
         _pct   = round(_log_r / _meta * 100, 1) if _meta > 0 else 0
         _filas_proy.append({
-            'Equipo':        _er['Equipo'],
+            'Equipo':        _label,
             'Zona':          _zona,
             'Meta':          _meta,
             'Logrados':      int(_log_r),
@@ -1531,22 +1530,27 @@ with tab_escenarios:
     _df_proy = pd.DataFrame(_filas_proy)
     st.dataframe(_df_proy, use_container_width=True, hide_index=True)
 
-    # Gráfica: faltante vs meta por equipo
+    # Gráfica: barras agrupadas — Meta (gris) vs Logrado (verde)
+    # Más clara que stacked: se ve directamente el progreso de cada equipo
     _fig_eq_proy = go.Figure()
     _fig_eq_proy.add_trace(go.Bar(
-        name='Logrados', x=_df_proy['Equipo'], y=_df_proy['Logrados'],
-        marker_color='#2ecc71', text=_df_proy['Logrados'], textposition='inside'
+        name='Meta', x=_df_proy['Equipo'], y=_df_proy['Meta'],
+        marker_color='#bdc3c7',
+        text=_df_proy['Meta'], textposition='outside',
+        textfont=dict(size=11)
     ))
     _fig_eq_proy.add_trace(go.Bar(
-        name='Faltantes', x=_df_proy['Equipo'], y=_df_proy['Faltantes'],
-        marker_color='#e74c3c', text=_df_proy['Faltantes'], textposition='inside'
+        name='Logrados', x=_df_proy['Equipo'], y=_df_proy['Logrados'],
+        marker_color='#2ecc71',
+        text=_df_proy['Logrados'], textposition='outside',
+        textfont=dict(size=11)
     ))
     _fig_eq_proy.update_layout(
-        barmode='stack', height=340,
-        yaxis_title='Personas', plot_bgcolor='white',
+        barmode='group', bargap=0.3, bargroupgap=0.05,
+        height=360, yaxis_title='Personas', plot_bgcolor='white',
         yaxis=dict(showgrid=True, gridcolor='#eee'),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        margin=dict(t=50, b=20)
+        margin=dict(t=50, b=80)
     )
     st.plotly_chart(_fig_eq_proy, use_container_width=True)
 
