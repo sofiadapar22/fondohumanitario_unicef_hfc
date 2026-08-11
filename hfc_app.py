@@ -980,20 +980,42 @@ with tab_avance:
               help=f"Promedio sobre {dias_campo} días de campo realizados")
     st.markdown("---")
 
+    # Base combinada para gráficas: niños + maternas (misma lógica que totales)
+    _mat_graf = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                 .drop_duplicates(subset=['nombre','perfil'])
+                 if 'perfil' in df.columns else pd.DataFrame())
+
     col_izq, col_der = st.columns(2)
     with col_izq:
-        st.markdown("**Niños tamizados por semana**")
+        st.markdown("**Tamizados por semana** (niños + maternas)")
         if not ninos.empty and 'semana' in ninos.columns:
-            por_sem = ninos.groupby('semana').size().reset_index(name='Niños')
-            por_sem['semana'] = por_sem['semana'].astype(str)
-            st.bar_chart(por_sem.set_index('semana'))
+            _sem_n = ninos.groupby('semana').size().reset_index(name='Niños')
+            _sem_n['semana'] = _sem_n['semana'].astype(str)
+            if not _mat_graf.empty and 'semana' in _mat_graf.columns:
+                _sem_m = _mat_graf.groupby('semana').size().reset_index(name='Maternas')
+                _sem_m['semana'] = _sem_m['semana'].astype(str)
+                _sem = _sem_n.merge(_sem_m, on='semana', how='outer').fillna(0)
+            else:
+                _sem = _sem_n
+                _sem['Maternas'] = 0
+            _sem['Total'] = _sem['Niños'] + _sem['Maternas']
+            st.bar_chart(_sem.set_index('semana')[['Total']])
         else:
             st.info("Sin datos.")
     with col_der:
-        st.markdown("**Niños tamizados por mes**")
+        st.markdown("**Tamizados por mes** (niños + maternas)")
         if not ninos.empty and 'mes' in ninos.columns:
-            por_mes = ninos.groupby('mes').size().reset_index(name='Niños')
-            st.bar_chart(por_mes.set_index('mes'))
+            _mes_n = ninos.groupby('mes').size().reset_index(name='Niños')
+            _mes_n['mes'] = _mes_n['mes'].astype(str)
+            if not _mat_graf.empty and 'mes' in _mat_graf.columns:
+                _mes_m = _mat_graf.groupby('mes').size().reset_index(name='Maternas')
+                _mes_m['mes'] = _mes_m['mes'].astype(str)
+                _mes = _mes_n.merge(_mes_m, on='mes', how='outer').fillna(0)
+            else:
+                _mes = _mes_n
+                _mes['Maternas'] = 0
+            _mes['Total'] = _mes['Niños'] + _mes['Maternas']
+            st.bar_chart(_mes.set_index('mes')[['Total']])
         else:
             st.info("Sin datos.")
 
@@ -1362,24 +1384,141 @@ with tab_avance:
 
 # ── TAB 2: PROYECCIÓN ──────────────────────────
 with tab_escenarios:
-    st.subheader("🎯 Proyección a Meta — Modelo de 3 Contactos")
+    st.subheader("📈 Ritmo de avance y proyección")
 
-    col_tl1, col_tl2, col_tl3, col_tl4 = st.columns(4)
-    col_tl1.metric("📅 Cierre C1 (tamizaje)",    FECHA_C1.strftime("%d %b %Y"),  help="Tamizaje campo: peso, talla, MUAC")
-    col_tl2.metric("📅 Cierre C2 (charla)",       FECHA_C2.strftime("%d %b %Y"),  help="Charla presencial en comunidades ya visitadas")
-    col_tl3.metric("📅 Cierre C3 (retamizaje)",   FECHA_C3.strftime("%d %b %Y"),  help="Segunda medición en campo")
-    col_tl4.metric("🏁 Cierre proyecto",           FECHA_LIMITE.strftime("%d %b %Y"))
+    # ── Parámetros ──────────────────────────────────────────────────────────
+    _FECHA_META  = date(2026, 9, 30)   # fecha objetivo de cierre tamizaje
+    _N_EQUIPOS   = 6                   # equipos activos
+    _HOY         = date.today()
+    _dias_rest   = max((_FECHA_META - _HOY).days, 1)
+    _sem_rest    = max(_dias_rest / 5, 0.2)   # semanas laborales restantes (5 días/semana)
+    _faltantes   = max(META_TAMIZAJE - total_tamizados, 0)
 
-    st.markdown("""
-    | Contacto | Modalidad | Ventana | Descripción |
-    |----------|-----------|---------|-------------|
-    | **C1** 🏥 | Presencial campo | hoy → 30 jul | Tamizaje: peso, talla, MUAC |
-    | **C2** 🏘️ | Presencial comunidad | 30 jul → 15 sep | Charla en las comunidades visitadas (no es tamizaje) |
-    | **C3** 🏥 | Presencial campo | 15 sep → 21 oct | Retamizaje: segunda medición |
-    """)
+    # ── KPIs ────────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("✅ Tamizados",   f"{total_tamizados:,}")
+    k2.metric("⏳ Faltantes",   f"{_faltantes:,}")
+    k3.metric("📅 Días al 30 sep", str(_dias_rest))
+    k4.metric("⚡ Ritmo actual", f"{tasa_actual:.0f}/día de campo",
+              help="Total tamizados ÷ días de campo realizados")
 
-    # ── Gráfico de progreso y proyección ────────────────────────────────────
-    st.markdown("### 📈 Progreso acumulado y proyección de avance C1")
+    st.markdown("---")
+
+    # ── Gráfico: tamizados por semana + promedio diario esa semana ───────────
+    st.markdown("### Ritmo por semana")
+
+    if not ninos.empty and 'semana' in ninos.columns:
+        # Niños por semana
+        _sw_n = ninos.groupby('semana').size().reset_index(name='n')
+        # Maternas por semana
+        if 'perfil' in df.columns and 'semana' in df.columns:
+            _mat_s = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                      .drop_duplicates(subset=['nombre','perfil']))
+            _sw_m = _mat_s.groupby('semana').size().reset_index(name='m') if not _mat_s.empty else pd.DataFrame(columns=['semana','m'])
+        else:
+            _sw_m = pd.DataFrame(columns=['semana','m'])
+
+        _sw = _sw_n.merge(_sw_m, on='semana', how='outer').fillna(0)
+        _sw['Total']        = (_sw['n'] + _sw['m']).astype(int)
+        _sw['semana']       = pd.to_datetime(_sw['semana'].astype(str))
+        _sw = _sw.sort_values('semana')
+
+        # Días de campo por semana (únicos en ninos)
+        _dias_x_sem = (ninos.dropna(subset=['semana','fecha_dia'])
+                       .groupby('semana')['fecha_dia'].nunique()
+                       .reset_index(name='dias_campo'))
+        _dias_x_sem['semana'] = pd.to_datetime(_dias_x_sem['semana'].astype(str))
+        _sw = _sw.merge(_dias_x_sem, on='semana', how='left')
+        _sw['dias_campo'] = _sw['dias_campo'].fillna(1)
+        _sw['Prom. diario'] = (_sw['Total'] / _sw['dias_campo']).round(1)
+
+        # Tasa necesaria para llegar al 30 sep (línea horizontal)
+        _tasa_nec_dia = round(_faltantes / _dias_rest, 1) if _dias_rest > 0 else 0
+        _tasa_nec_sem = round(_faltantes / _sem_rest, 0)  if _sem_rest  > 0 else 0
+
+        _sw['semana_label'] = _sw['semana'].dt.strftime('Sem %d/%m')
+
+        _fig_sem = go.Figure()
+
+        # Barras: total tamizados esa semana
+        _fig_sem.add_trace(go.Bar(
+            name='Tamizados en la semana',
+            x=_sw['semana_label'], y=_sw['Total'],
+            marker_color='#3498db',
+            text=_sw['Total'], textposition='outside',
+            yaxis='y1'
+        ))
+
+        # Línea: promedio diario esa semana
+        _fig_sem.add_trace(go.Scatter(
+            name='Promedio diario (esa semana)',
+            x=_sw['semana_label'], y=_sw['Prom. diario'],
+            mode='lines+markers+text',
+            line=dict(color='#2ecc71', width=2.5),
+            marker=dict(size=8),
+            text=[f"{v:.0f}/día" for v in _sw['Prom. diario']],
+            textposition='top center',
+            yaxis='y2'
+        ))
+
+        # Línea horizontal: tasa diaria necesaria
+        _fig_sem.add_hline(
+            y=_tasa_nec_dia, yref='y2',
+            line_dash='dash', line_color='#e74c3c', line_width=2,
+            annotation_text=f"  Necesario: {_tasa_nec_dia}/día para 30 sep",
+            annotation_position="top left",
+            annotation_font_color='#e74c3c'
+        )
+
+        _fig_sem.update_layout(
+            barmode='group',
+            yaxis=dict(title='Tamizados/semana', showgrid=True, gridcolor='#eee'),
+            yaxis2=dict(title='Promedio diario', overlaying='y', side='right',
+                        showgrid=False, rangemode='tozero'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(t=50, b=30),
+            plot_bgcolor='white',
+            height=420
+        )
+        st.plotly_chart(_fig_sem, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Tabla: qué necesitan hacer ──────────────────────────────────────────
+    st.markdown("### ¿Qué necesitan hacer para llegar al 30 de septiembre?")
+
+    _tasa_nec_eq_dia = round(_tasa_nec_dia / _N_EQUIPOS, 1)
+    _tasa_nec_eq_sem = round(_tasa_nec_sem / _N_EQUIPOS, 0)
+
+    c_nec1, c_nec2 = st.columns(2)
+    with c_nec1:
+        st.markdown("**Todo el equipo**")
+        _df_nec = pd.DataFrame({
+            'Período': ['Por día de campo', 'Por semana (5 días)', 'Semanas restantes', 'Meta al 30 sep'],
+            'Necesario': [
+                f"{_tasa_nec_dia:.0f} tamizajes/día",
+                f"{_tasa_nec_sem:.0f} tamizajes/semana",
+                f"{_sem_rest:.1f} semanas",
+                f"{META_TAMIZAJE:,} ({_faltantes:,} pendientes)",
+            ]
+        })
+        st.dataframe(_df_nec, use_container_width=True, hide_index=True)
+
+    with c_nec2:
+        st.markdown(f"**Por equipo ({_N_EQUIPOS} equipos)**")
+        _df_eq = pd.DataFrame({
+            'Período': ['Por día de campo', 'Por semana (5 días)', 'Ritmo actual total', 'Diferencia vs necesario'],
+            'Valor': [
+                f"{_tasa_nec_eq_dia:.1f} tamizajes/día",
+                f"{_tasa_nec_eq_sem:.0f} tamizajes/semana",
+                f"{tasa_actual:.0f} tamizajes/día total",
+                f"{tasa_actual - _tasa_nec_dia:+.0f}/día {'✅' if tasa_actual >= _tasa_nec_dia else '⚠️ por debajo'}",
+            ]
+        })
+        st.dataframe(_df_eq, use_container_width=True, hide_index=True)
+
+    # (contenido anterior eliminado — ver sección nueva arriba)
+    if False:
     if not ninos.empty and 'fecha_dia' in ninos.columns:
         _n_dia = ninos.groupby('fecha_dia').size().reset_index(name='n')
         if 'fecha_dia' in df.columns and all(c in df.columns for c in ['peso','talla','imc']):
@@ -1666,8 +1805,7 @@ with tab_escenarios:
         {'✅' if e['cumple_c2'] else '❌'} C2 termina: <b>{_fmt(e['fecha_fin_c2'])}</b> (límite {FECHA_C2.strftime('%d/%m')}) &nbsp;·&nbsp;
         {'✅' if e['cumple_c3'] else '❌'} C3 termina: <b>{_fmt(e['fecha_fin_c3'])}</b> (límite {FECHA_C3.strftime('%d/%m')}) &nbsp;·&nbsp;
         Capacidad: <b>{e['cap_dia']} /día · {e['cap_sem']}/semana</b>
-        </small></div>
-        """, unsafe_allow_html=True)
+        pass  # fin bloque if False
 
 
 # ── TAB 3: INDICADORES NUTRICIONALES ───────────
