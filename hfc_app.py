@@ -992,15 +992,18 @@ with tab_avance:
     st.markdown("---")
     # ── Avance por zona vs meta propuesta ──
     st.markdown("**Avance por zona vs. meta propuesta**")
-    # Tamizados = niños + maternas sin niños (misma lógica que el dashboard principal)
+    # Tamizados = niños + TODAS las maternas (misma lógica que tab Equipos)
     mun_base = pd.DataFrame({
         'Municipio': list(METAS_ZONA.keys()),
         'Meta zona': list(METAS_ZONA.values()),
     })
-    _ids_con_n_avz = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
-    _nin_mun  = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
-    _mat_mun  = df[~df['_id'].isin(_ids_con_n_avz)][['Municipio']].copy() if '_id' in df.columns and 'Municipio' in df.columns else pd.DataFrame(columns=['Municipio'])
-    _tam_mun  = pd.concat([_nin_mun, _mat_mun], ignore_index=True)
+    _nin_mun = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
+    if 'perfil' in df.columns and 'Municipio' in df.columns:
+        _mat_mun = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                    .drop_duplicates(subset=['nombre','perfil'])[['Municipio']].copy())
+    else:
+        _mat_mun = pd.DataFrame(columns=['Municipio'])
+    _tam_mun = pd.concat([_nin_mun, _mat_mun], ignore_index=True)
     if not _tam_mun.empty:
         mun_actual = _tam_mun.groupby('Municipio').size().reset_index(name='Tamizados')
     else:
@@ -1014,9 +1017,24 @@ with tab_avance:
     st.dataframe(mun_n[['Municipio','Meta zona','Tamizados','Pendientes','% avance']],
                  use_container_width=True, hide_index=True)
 
-    # Barras comparativas
-    bar_data = mun_n.set_index('Municipio')[['Tamizados','Meta zona']]
-    st.bar_chart(bar_data)
+    # Gráfica: barras agrupadas Tamizados vs Meta (no apiladas)
+    _fig_zona = go.Figure()
+    _fig_zona.add_trace(go.Bar(
+        name='Tamizados', x=mun_n['Municipio'], y=mun_n['Tamizados'],
+        marker_color='#2ecc71', text=mun_n['Tamizados'], textposition='outside'
+    ))
+    _fig_zona.add_trace(go.Bar(
+        name='Meta', x=mun_n['Municipio'], y=mun_n['Meta zona'],
+        marker_color='#2c3e50', opacity=0.4,
+        text=mun_n['Meta zona'], textposition='outside'
+    ))
+    _fig_zona.update_layout(
+        barmode='group', bargap=0.25,
+        xaxis_title='', yaxis_title='Personas tamizadas',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(t=40, b=20)
+    )
+    st.plotly_chart(_fig_zona, use_container_width=True)
 
     st.markdown("---")
 
