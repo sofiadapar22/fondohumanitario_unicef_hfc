@@ -1390,7 +1390,8 @@ with tab_escenarios:
     _FECHA_META  = date(2026, 9, 30)   # fecha objetivo de cierre tamizaje
     _N_EQUIPOS   = 6                   # equipos activos
     _HOY         = date.today()
-    _dias_rest   = max((_FECHA_META - _HOY).days, 1)
+    # Días hábiles (lun-vie) restantes hasta el 30 sep
+    _dias_rest   = max(int(np.busday_count(_HOY.isoformat(), _FECHA_META.isoformat())), 1)
     _sem_rest    = max(_dias_rest / 5, 0.2)   # semanas laborales restantes (5 días/semana)
     _faltantes   = max(META_TAMIZAJE - total_tamizados, 0)
 
@@ -1398,7 +1399,7 @@ with tab_escenarios:
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("✅ Tamizados",   f"{total_tamizados:,}")
     k2.metric("⏳ Faltantes",   f"{_faltantes:,}")
-    k3.metric("📅 Días al 30 sep", str(_dias_rest))
+    k3.metric("📅 Días hábiles al 30 sep", str(_dias_rest))
     k4.metric("⚡ Ritmo actual", f"{tasa_actual:.0f}/día de campo",
               help="Total tamizados ÷ días de campo realizados")
 
@@ -1501,24 +1502,20 @@ with tab_escenarios:
     _tam_mun2 = pd.concat([_nin_mun2, _mat_mun2], ignore_index=True)
     _actual_mun = _tam_mun2.groupby('Municipio').size().reset_index(name='Logrados') if not _tam_mun2.empty else pd.DataFrame(columns=['Municipio','Logrados'])
 
-    # Tabla por equipo: Zona → meta → logrado → faltante → necesario/día → necesario/semana
+    # Tabla por zona/municipio (una fila por zona, sin duplicar cuando varios equipos comparten zona)
     _filas_proy = []
-    _equipos_zonas = DF_EQUIPOS[['Equipo','Zona']].drop_duplicates()
-    for _, _er in _equipos_zonas.iterrows():
-        _zona  = _er['Zona']
-        _eq_nm = _er['Equipo']
-        # Si el equipo tiene múltiples zonas, agregar la zona al label
-        _n_zonas_eq = (_equipos_zonas['Equipo'] == _eq_nm).sum()
-        _label = f"{_eq_nm} / {_zona}" if _n_zonas_eq > 1 else _eq_nm
-        _meta  = METAS_ZONA.get(_zona, 0)
+    for _zona, _meta in METAS_ZONA.items():
+        # Equipos asignados a esta zona
+        _eqs = DF_EQUIPOS[DF_EQUIPOS['Zona'] == _zona]['Equipo'].unique()
+        _equipos_str = ', '.join(_eqs) if len(_eqs) > 0 else '—'
         _log_r = _actual_mun[_actual_mun['Municipio'] == _zona]['Logrados'].sum() if not _actual_mun.empty else 0
         _falt  = max(_meta - _log_r, 0)
         _nec_d = round(_falt / _dias_rest, 1) if _dias_rest > 0 else 0
         _nec_s = round(_falt / _sem_rest,  0) if _sem_rest  > 0 else 0
         _pct   = round(_log_r / _meta * 100, 1) if _meta > 0 else 0
         _filas_proy.append({
-            'Equipo':        _label,
             'Zona':          _zona,
+            'Equipo(s)':     _equipos_str,
             'Meta':          _meta,
             'Logrados':      int(_log_r),
             '% avance':      f"{_pct}%",
@@ -1530,27 +1527,26 @@ with tab_escenarios:
     _df_proy = pd.DataFrame(_filas_proy)
     st.dataframe(_df_proy, use_container_width=True, hide_index=True)
 
-    # Gráfica: barras agrupadas — Meta (gris) vs Logrado (verde)
-    # Más clara que stacked: se ve directamente el progreso de cada equipo
+    # Gráfica: barras agrupadas — Meta (gris) vs Logrado (verde) por zona
     _fig_eq_proy = go.Figure()
     _fig_eq_proy.add_trace(go.Bar(
-        name='Meta', x=_df_proy['Equipo'], y=_df_proy['Meta'],
+        name='Meta', x=_df_proy['Zona'], y=_df_proy['Meta'],
         marker_color='#bdc3c7',
         text=_df_proy['Meta'], textposition='outside',
         textfont=dict(size=11)
     ))
     _fig_eq_proy.add_trace(go.Bar(
-        name='Logrados', x=_df_proy['Equipo'], y=_df_proy['Logrados'],
+        name='Logrados', x=_df_proy['Zona'], y=_df_proy['Logrados'],
         marker_color='#2ecc71',
         text=_df_proy['Logrados'], textposition='outside',
         textfont=dict(size=11)
     ))
     _fig_eq_proy.update_layout(
         barmode='group', bargap=0.3, bargroupgap=0.05,
-        height=360, yaxis_title='Personas', plot_bgcolor='white',
+        height=380, yaxis_title='Personas', plot_bgcolor='white',
         yaxis=dict(showgrid=True, gridcolor='#eee'),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        margin=dict(t=50, b=80)
+        margin=dict(t=50, b=100)
     )
     st.plotly_chart(_fig_eq_proy, use_container_width=True)
 
