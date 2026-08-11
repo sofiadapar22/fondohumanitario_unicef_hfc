@@ -311,12 +311,20 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
     ninos.loc[mask_talla_err, 'talla_nino'] = ninos.loc[mask_talla_err, 'talla_nino'] / 10
     ninos['talla_corregida'] = mask_talla_err  # flag para mostrar en Flags HFC
 
-    # Deduplicar: un niño puede aparecer en group_sr9jz33 (v2) Y sec3_salud_nutricion (v1)
-    # si el export de Kobo incluye ambas versiones. Se usa submission + nombre + fecha de nacimiento.
+    # Deduplicar nivel 1: mismo submission + nombre + DOB
+    # (captura duplicados entre hojas group_sr9jz33 y sec3_salud_nutricion del mismo export)
     _dedup_cols = [c for c in ['_submission_id', '¿Cuál es el nombre del niño/a?',
                                 'Fecha de nacimiento del niño a evaluar'] if c in ninos.columns]
     if _dedup_cols:
         ninos = ninos.drop_duplicates(subset=_dedup_cols, keep='first').reset_index(drop=True)
+
+    # Deduplicar nivel 2: mismo nombre + DOB + cantón + fecha_dia
+    # (captura dobles envíos en KoBo con _submission_id distinto pero mismo niño/a)
+    _dedup_cols2 = [c for c in ['¿Cuál es el nombre del niño/a?',
+                                 'Fecha de nacimiento del niño a evaluar',
+                                 'canton_nombre', 'fecha_dia'] if c in ninos.columns]
+    if len(_dedup_cols2) >= 2:
+        ninos = ninos.drop_duplicates(subset=_dedup_cols2, keep='first').reset_index(drop=True)
 
     return ninos
 
@@ -2059,8 +2067,8 @@ with tab_enc:
             _mat_enc_base = pd.DataFrame(columns=['encuestador','fecha_dia'])
         _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
 
-        # Total coincide con Tab 1 (total_tamizados)
-        _total_global  = total_tamizados   # usar el valor ya calculado = 837
+        # Total calculado directamente del base combinado (niños deduplicados + maternas)
+        _total_global  = len(_todos_enc_base)
         _dias_globales = _todos_enc_base['fecha_dia'].nunique()
         _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
 
