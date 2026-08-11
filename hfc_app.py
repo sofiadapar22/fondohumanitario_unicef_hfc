@@ -1419,20 +1419,23 @@ with tab_escenarios:
             _sw_m = pd.DataFrame(columns=['semana','m'])
 
         _sw = _sw_n.merge(_sw_m, on='semana', how='outer').fillna(0)
-        _sw['Total']        = (_sw['n'] + _sw['m']).astype(int)
-        _sw['semana']       = pd.to_datetime(_sw['semana'].astype(str))
-        _sw = _sw.sort_values('semana')
+        _sw['Total']  = (_sw['n'] + _sw['m']).astype(int)
+        _sw['semana'] = pd.to_datetime(_sw['semana'].astype(str))
+        _sw = _sw.sort_values('semana').reset_index(drop=True)
 
-        # Días de campo por semana (únicos en ninos)
+        # Promedio diario: semanas completas = Total/5, semana actual (última) = Total/días reales
         _dias_x_sem = (ninos.dropna(subset=['semana','fecha_dia'])
                        .groupby('semana')['fecha_dia'].nunique()
                        .reset_index(name='dias_campo'))
         _dias_x_sem['semana'] = pd.to_datetime(_dias_x_sem['semana'].astype(str))
         _sw = _sw.merge(_dias_x_sem, on='semana', how='left')
         _sw['dias_campo'] = _sw['dias_campo'].fillna(1)
-        _sw['Prom. diario'] = (_sw['Total'] / _sw['dias_campo']).round(1)
+        # Última semana puede ser incompleta → usar días reales; el resto = 5 hábiles
+        _sw['dias_calc'] = 5
+        _sw.loc[_sw.index[-1], 'dias_calc'] = int(_sw.loc[_sw.index[-1], 'dias_campo'])
+        _sw['Prom. diario'] = (_sw['Total'] / _sw['dias_calc']).round(1)
 
-        # Tasa necesaria para llegar al 30 sep (línea horizontal)
+        # Tasa necesaria
         _tasa_nec_dia = round(_faltantes / _dias_rest, 1) if _dias_rest > 0 else 0
         _tasa_nec_sem = round(_faltantes / _sem_rest, 0)  if _sem_rest  > 0 else 0
 
@@ -1440,7 +1443,7 @@ with tab_escenarios:
 
         _fig_sem = go.Figure()
 
-        # Barras: total tamizados esa semana
+        # Barras
         _fig_sem.add_trace(go.Bar(
             name='Tamizados en la semana',
             x=_sw['semana_label'], y=_sw['Total'],
@@ -1449,44 +1452,108 @@ with tab_escenarios:
             yaxis='y1'
         ))
 
-        # Línea: promedio diario esa semana
+        # Línea promedio diario — etiquetas alternadas para evitar traslape
+        _pos = ['top left' if i % 2 == 0 else 'top right' for i in range(len(_sw))]
         _fig_sem.add_trace(go.Scatter(
             name='Promedio diario (esa semana)',
             x=_sw['semana_label'], y=_sw['Prom. diario'],
-            mode='lines+markers+text',
+            mode='lines+markers',
             line=dict(color='#2ecc71', width=2.5),
             marker=dict(size=8),
-            text=[f"{v:.0f}/día" for v in _sw['Prom. diario']],
-            textposition='top center',
             yaxis='y2'
         ))
+        # Anotaciones separadas para no solapar
+        for i, row in _sw.iterrows():
+            _fig_sem.add_annotation(
+                x=row['semana_label'], y=row['Prom. diario'],
+                text=f"<b>{row['Prom. diario']:.0f}/día</b>",
+                showarrow=False, yref='y2',
+                yshift=14 if i % 2 == 0 else -18,
+                font=dict(size=11, color='#27ae60')
+            )
 
-        # Línea horizontal: tasa diaria necesaria
+        # Línea horizontal tasa necesaria
         _fig_sem.add_hline(
             y=_tasa_nec_dia, yref='y2',
             line_dash='dash', line_color='#e74c3c', line_width=2,
-            annotation_text=f"  Necesario: {_tasa_nec_dia}/día para 30 sep",
-            annotation_position="top left",
-            annotation_font_color='#e74c3c'
+            annotation_text=f"Meta diaria: {_tasa_nec_dia:.0f}/día para 30 sep",
+            annotation_position="bottom right",
+            annotation_font_color='#e74c3c', annotation_font_size=12
         )
 
         _fig_sem.update_layout(
-            barmode='group',
-            yaxis=dict(title='Tamizados/semana', showgrid=True, gridcolor='#eee'),
+            yaxis =dict(title='Tamizados/semana', showgrid=True, gridcolor='#eee'),
             yaxis2=dict(title='Promedio diario', overlaying='y', side='right',
                         showgrid=False, rangemode='tozero'),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            margin=dict(t=50, b=30),
-            plot_bgcolor='white',
-            height=420
+            margin=dict(t=60, b=30, l=20, r=60),
+            plot_bgcolor='white', height=440
         )
         st.plotly_chart(_fig_sem, use_container_width=True)
 
     st.markdown("---")
 
-    # ── Tabla: qué necesitan hacer ──────────────────────────────────────────
-    st.markdown("### ¿Qué necesitan hacer para llegar al 30 de septiembre?")
+    # ── Proyección por equipo según meta de zona ─────────────────────────────
+    st.markdown("### Proyección por equipo")
 
+    # Tamizados actuales por zona
+    _nin_mun2 = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
+    if 'perfil' in df.columns and 'Municipio' in df.columns:
+        _mat_mun2 = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                     .drop_duplicates(subset=['nombre','perfil'])[['Municipio']].copy())
+    else:
+        _mat_mun2 = pd.DataFrame(columns=['Municipio'])
+    _tam_mun2 = pd.concat([_nin_mun2, _mat_mun2], ignore_index=True)
+    _actual_mun = _tam_mun2.groupby('Municipio').size().reset_index(name='Logrados') if not _tam_mun2.empty else pd.DataFrame(columns=['Municipio','Logrados'])
+
+    # Tabla por equipo: Zona → meta → logrado → faltante → necesario/día → necesario/semana
+    _filas_proy = []
+    _equipos_zonas = DF_EQUIPOS[['Equipo','Zona']].drop_duplicates()
+    for _, _er in _equipos_zonas.iterrows():
+        _zona  = _er['Zona']
+        _meta  = METAS_ZONA.get(_zona, 0)
+        _log_r = _actual_mun[_actual_mun['Municipio'] == _zona]['Logrados'].sum() if not _actual_mun.empty else 0
+        _falt  = max(_meta - _log_r, 0)
+        _nec_d = round(_falt / _dias_rest, 1) if _dias_rest > 0 else 0
+        _nec_s = round(_falt / _sem_rest,  0) if _sem_rest  > 0 else 0
+        _pct   = round(_log_r / _meta * 100, 1) if _meta > 0 else 0
+        _filas_proy.append({
+            'Equipo':        _er['Equipo'],
+            'Zona':          _zona,
+            'Meta':          _meta,
+            'Logrados':      int(_log_r),
+            '% avance':      f"{_pct}%",
+            'Faltantes':     int(_falt),
+            'Nec./día':      f"{_nec_d:.1f}",
+            'Nec./semana':   f"{int(_nec_s)}",
+        })
+
+    _df_proy = pd.DataFrame(_filas_proy)
+    st.dataframe(_df_proy, use_container_width=True, hide_index=True)
+
+    # Gráfica: faltante vs meta por equipo
+    _fig_eq_proy = go.Figure()
+    _fig_eq_proy.add_trace(go.Bar(
+        name='Logrados', x=_df_proy['Equipo'], y=_df_proy['Logrados'],
+        marker_color='#2ecc71', text=_df_proy['Logrados'], textposition='inside'
+    ))
+    _fig_eq_proy.add_trace(go.Bar(
+        name='Faltantes', x=_df_proy['Equipo'], y=_df_proy['Faltantes'],
+        marker_color='#e74c3c', text=_df_proy['Faltantes'], textposition='inside'
+    ))
+    _fig_eq_proy.update_layout(
+        barmode='stack', height=340,
+        yaxis_title='Personas', plot_bgcolor='white',
+        yaxis=dict(showgrid=True, gridcolor='#eee'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(t=50, b=20)
+    )
+    st.plotly_chart(_fig_eq_proy, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Resumen global ───────────────────────────────────────────────────────
+    st.markdown("### ¿Qué necesitan hacer para llegar al 30 de septiembre?")
     _tasa_nec_eq_dia = round(_tasa_nec_dia / _N_EQUIPOS, 1)
     _tasa_nec_eq_sem = round(_tasa_nec_sem / _N_EQUIPOS, 0)
 
@@ -1505,8 +1572,8 @@ with tab_escenarios:
         st.dataframe(_df_nec, use_container_width=True, hide_index=True)
 
     with c_nec2:
-        st.markdown(f"**Por equipo ({_N_EQUIPOS} equipos)**")
-        _df_eq = pd.DataFrame({
+        st.markdown(f"**Por equipo ({_N_EQUIPOS} equipos, promedio)**")
+        _df_eq_res = pd.DataFrame({
             'Período': ['Por día de campo', 'Por semana (5 días)', 'Ritmo actual total', 'Diferencia vs necesario'],
             'Valor': [
                 f"{_tasa_nec_eq_dia:.1f} tamizajes/día",
@@ -1515,7 +1582,7 @@ with tab_escenarios:
                 f"{tasa_actual - _tasa_nec_dia:+.0f}/día {'✅' if tasa_actual >= _tasa_nec_dia else '⚠️ por debajo'}",
             ]
         })
-        st.dataframe(_df_eq, use_container_width=True, hide_index=True)
+        st.dataframe(_df_eq_res, use_container_width=True, hide_index=True)
 
 
 # ── TAB 3: INDICADORES NUTRICIONALES ───────────
