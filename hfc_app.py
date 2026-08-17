@@ -2551,6 +2551,359 @@ with tab_export:
     except Exception as _e:
         st.error(f"Error generando base FUSAL: {_e}")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXPORT TRATADO: Base con protocolo completo de limpieza (v8 14/08/2026)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🧹 Base tratada — Protocolo completo aplicado")
+    st.caption(
+        "Aplica **todas** las reglas del Protocolo de Limpieza v8 (14/08/2026): "
+        "edad calculada desde DOB con fecha de entrevista como referencia, rango etario, "
+        "validación de teléfonos, flag sin_nino_vinculado, encuestador normalizado + equipo asignado, "
+        "nombres en formato título, y hoja de notas de tratamiento."
+    )
+
+    EDAD_MINIMA_ENTREVISTADA = 10  # años — constante ajustable por el equipo
+
+    def construir_base_tratada(df_raw_in, ninos_in, df_adic_raw_in, df_ninos_raw_in, df_sec3_raw_in):
+        """
+        Genera base tratada con protocolo completo de limpieza.
+        Reglas a-m del Protocolo_Limpieza_Base_UNICEF_FUSAL v8 (14/08/2026).
+        """
+        import re as _re
+
+        # ── Helpers internos ──────────────────────────────────────────────────
+        def _dedup_cols(frame):
+            if frame.columns.duplicated().any():
+                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
+            return frame
+
+        def _consolidar_pares(frame):
+            """Regla a: consolida col.1, col.2, etc. por coalesce, los elimina."""
+            frame = _dedup_cols(frame.copy())
+            cols = frame.columns.tolist()
+            to_drop = []
+            for c in cols:
+                parts = c.rsplit('.', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    base = parts[0]
+                    if base in cols and c not in to_drop:
+                        frame[base] = frame[base].where(frame[base].notna(), frame[c])
+                        to_drop.append(c)
+            # Regla a – pares especiales de edad que NO llevan sufijo .1 pero son la misma variable
+            _edad_pares = [
+                ('edad_entrevistado', 'Edad_01'),
+                ('edad_nino',         'Edad'),
+            ]
+            for col_a, col_b in _edad_pares:
+                if col_a in frame.columns and col_b in frame.columns:
+                    frame[col_a] = frame[col_a].where(frame[col_a].notna(), frame[col_b])
+                    to_drop.append(col_b)
+            if to_drop:
+                frame = frame.drop(columns=[c for c in to_drop if c in frame.columns], errors='ignore')
+            return frame
+
+        # Regla b/c: alias de encuestador → nombre canónico → equipo
+        _eq_full = (DF_EQUIPOS[['Nombre','Equipo','Región','Zona','Rol']]
+                    .drop_duplicates('Nombre').set_index('Nombre'))
+
+        def _normalizar_enc(frame):
+            frame = frame.copy()
+            if 'encuestador' not in frame.columns:
+                return frame
+            frame['encuestador'] = (frame['encuestador'].astype(str).str.strip()
+                                     .replace('nan', pd.NA).replace(_ENC_ALIASES))
+            # Columna para documentar reasignación Trinidad → Gaby Pino
+            frame['enc_reasignado'] = (
+                frame['encuestador'] == 'Gaby Pino'
+            ) & frame['encuestador'].notna()   # True solo en los reasignados (approx)
+            # Agregar equipo/región/zona/rol
+            for col in ['Equipo', 'Región', 'Zona', 'Rol']:
+                if col in _eq_full.columns:
+                    frame[col] = frame['encuestador'].map(_eq_full[col])
+            return frame
+
+        # Regla j/k: calcular edad y rango etario desde DOB, usando fecha de entrevista
+        def _calc_edad_nino(dob, fecha_ref):
+            try:
+                m = (pd.Timestamp(fecha_ref) - pd.Timestamp(dob)).days / 30.44
+                return m
+            except Exception:
+                return np.nan
+
+        def _rango_nino(meses):
+            if pd.isna(meses): return 'desconocido'
+            if meses < 6:   return '0-5 meses'
+            if meses < 12:  return '6-11 meses'
+            if meses < 24:  return '12-23 meses'
+            if meses < 60:  return '24-59 meses'
+            if meses < 120: return '5-9 años'
+            if meses < 180: return '10-14 años'
+            if meses < 216: return '15-17 años'
+            if meses < 300: return '18-24 años'
+            if meses < 720: return '25-59 años'
+            return '60+ años'
+
+        def _calc_edad_adulto(dob, fecha_ref):
+            try:
+                return (pd.Timestamp(fecha_ref) - pd.Timestamp(dob)).days / 365.25
+            except Exception:
+                return np.nan
+
+        def _rango_adulto(anios):
+            if pd.isna(anios): return 'desconocido'
+            if anios < 10:  return 'revisar'
+            if anios < 15:  return '10-14 años'
+            if anios < 18:  return '15-17 años'
+            if anios < 25:  return '18-24 años'
+            if anios < 60:  return '25-59 años'
+            return '60+ años'
+
+        # Regla l: teléfono válido = 8 dígitos exactos
+        def _telefono_invalido(t):
+            s = _re.sub(r'\D', '', str(t))
+            return len(s) != 8
+
+        # ── PASO 1: Hogar ─────────────────────────────────────────────────────
+        ent = df_raw_in.copy()
+        ent = _consolidar_pares(ent)
+        ent = _normalizar_enc(ent)
+
+        # Regla j – edad adulto desde DOB y fecha entrevista
+        _dob_col = next((c for c in ['Fecha de nacimiento de la persona entrevistada',
+                                      'Fecha de nacimiento de la persona entrevistada.1']
+                          if c in ent.columns), None)
+        if _dob_col:
+            ent['_dob_adulto'] = pd.to_datetime(ent[_dob_col], errors='coerce')
+        else:
+            ent['_dob_adulto'] = pd.NaT
+
+        _fref_col = 'fecha_dia' if 'fecha_dia' in ent.columns else 'start'
+        ent['_fref'] = pd.to_datetime(ent[_fref_col], errors='coerce')
+
+        ent['edad_anios'] = ent.apply(
+            lambda r: _calc_edad_adulto(r['_dob_adulto'], r['_fref']), axis=1)
+        ent['edad_implausible'] = ent['edad_anios'].apply(
+            lambda a: (not pd.isna(a)) and a < EDAD_MINIMA_ENTREVISTADA)
+        ent.loc[ent['edad_implausible'], 'edad_anios'] = np.nan
+        ent['rango_etario'] = ent['edad_anios'].apply(_rango_adulto)
+        ent.loc[ent['edad_implausible'], 'rango_etario'] = 'revisar_edad'
+
+        # Regla l – teléfono
+        if 'telefono' in ent.columns:
+            ent['telefono_invalido'] = ent['telefono'].apply(_telefono_invalido)
+        # Regla m – nombre en título
+        if 'nombre' in ent.columns:
+            ent['nombre'] = ent['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
+
+        ent = ent.drop(columns=['_dob_adulto', '_fref'], errors='ignore')
+
+        # version_formulario desde __version__ o columna existente
+        if '__version__' in ent.columns:
+            ent['version_formulario'] = ent['__version__']
+        elif '_submission___version__' in ent.columns:
+            ent['version_formulario'] = ent['_submission___version__']
+        else:
+            ent['version_formulario'] = pd.NA
+
+        # ── PASO 2: Niños ─────────────────────────────────────────────────────
+        # Reutilizamos ninos_in que ya tiene dedup nivel 1+2, corrección de talla y fecha
+        nin = ninos_in.copy()
+        nin = _consolidar_pares(nin)
+        nin = _normalizar_enc(nin)
+
+        # Regla j – edad niño desde DOB y fecha_dia del registro
+        _dob_nin_col = 'Fecha de nacimiento del niño a evaluar'
+        if _dob_nin_col in nin.columns:
+            nin['_dob_n'] = pd.to_datetime(nin[_dob_nin_col], errors='coerce')
+        else:
+            nin['_dob_n'] = pd.NaT
+        nin['_fref_n'] = pd.to_datetime(nin.get('fecha_dia', pd.Series(dtype=object, index=nin.index)), errors='coerce')
+
+        nin['edad_meses'] = nin.apply(
+            lambda r: _calc_edad_nino(r['_dob_n'], r['_fref_n'])
+            if pd.notna(r['_dob_n']) and pd.notna(r['_fref_n']) else np.nan, axis=1)
+        nin['edad_anios'] = (nin['edad_meses'] / 12).round(2)
+        nin['rango_etario'] = nin['edad_meses'].apply(_rango_nino)
+
+        # Excluir registro vacío/prueba: nombre = "-"
+        _col_nom_n = '¿Cuál es el nombre del niño/a?'
+        if _col_nom_n in nin.columns:
+            nin = nin[nin[_col_nom_n].astype(str).str.strip() != '-'].reset_index(drop=True)
+
+        # Regla m – nombre niño en título
+        if _col_nom_n in nin.columns:
+            nin[_col_nom_n] = nin[_col_nom_n].astype(str).str.strip().str.title()
+
+        # Regla l – teléfono en niños
+        if 'telefono' in nin.columns:
+            nin['telefono_invalido'] = nin['telefono'].apply(_telefono_invalido)
+
+        nin = nin.drop(columns=['_dob_n', '_fref_n'], errors='ignore')
+
+        # ── PASO 3: Regla g – sin_nino_vinculado en hogar ────────────────────
+        _perfiles_con_nino = [
+            'Madre de niño/a menor de 5 años',
+            'Padre, familiar o cuidador(a) responsable de niño/a menor de 5 años (distinto de la madre)',
+            'Madre de niño/a menor a 5 años y mujer embarazada',
+        ]
+        _lactante_col = '¿Ha asistido con su niña o niño?'
+        if 'perfil' in ent.columns:
+            _ids_con_nino = set(nin['_submission_id'].dropna().unique()) if '_submission_id' in nin.columns else set()
+            _id_col_ent = '_id' if '_id' in ent.columns else None
+            if _id_col_ent:
+                _mask_debe = ent['perfil'].isin(_perfiles_con_nino)
+                if _lactante_col in ent.columns:
+                    _mask_debe |= (ent['perfil'] == 'Madre lactante') & (ent[_lactante_col] == 'Sí')
+                ent['sin_nino_vinculado'] = _mask_debe & ~ent[_id_col_ent].isin(_ids_con_nino)
+            else:
+                ent['sin_nino_vinculado'] = False
+        else:
+            ent['sin_nino_vinculado'] = False
+
+        # ── PASO 4: Niños + Hogar (sin bug _id_y) ────────────────────────────
+        _ctx_cols = [c for c in ['_id','fecha_dia','semana','encuestador','perfil',
+                                   'Municipio','distrito_nombre','canton_nombre',
+                                   'unidad_nombre','nombre','telefono','version_formulario']
+                      if c in ent.columns]
+        _ctx = ent[_ctx_cols].copy()
+        _ctx = _ctx.rename(columns={c: f'hogar_{c}' for c in _ctx.columns if c != '_id'})
+
+        nh = nin.copy()
+        if '_submission_id' in nh.columns and '_id' in _ctx.columns:
+            nh = nh.merge(_ctx, left_on='_submission_id', right_on='_id', how='left')
+            # Limpiar _id residual del merge (bug _id_y)
+            nh = nh.drop(columns=[c for c in ['_id','_id_x','_id_y'] if c in nh.columns], errors='ignore')
+        nh = _dedup_cols(nh)
+
+        # ── PASO 5: Semana label ──────────────────────────────────────────────
+        _todas_fechas_t = sorted(ent['semana'].dropna().unique()) if 'semana' in ent.columns else []
+        _sem_map_t = {str(f): f"Sem {i+1} ({pd.Timestamp(str(f)).day} {pd.Timestamp(str(f)).strftime('%b').lower()})"
+                      for i, f in enumerate(_todas_fechas_t)}
+        def _add_sem(frame):
+            if 'semana' in frame.columns:
+                frame['Semana'] = frame['semana'].apply(lambda x: _sem_map_t.get(str(x), str(x) if pd.notna(x) else ''))
+            return frame
+        ent = _add_sem(ent)
+        nin = _add_sem(nin)
+        nh  = _add_sem(nh)
+
+        # ── PASO 6: Reordenar columnas prioritarias ───────────────────────────
+        def _reorder(frame, priority):
+            frame = _dedup_cols(frame)
+            pri  = [c for c in priority if c in frame.columns]
+            rest = [c for c in frame.columns if c not in set(pri)]
+            return frame[pri + rest]
+
+        _pri_ent = ['Semana','Equipo','Región','Zona','encuestador','Rol',
+                    'version_formulario','sin_nino_vinculado','edad_implausible',
+                    'edad_anios','rango_etario','telefono_invalido',
+                    'start','end','_id','_uuid','_submission_time']
+        _pri_nin = ['_submission_id','Semana','Equipo','Región','Zona','encuestador','Rol',
+                    'fecha_dia','Municipio','distrito_nombre','canton_nombre','unidad_nombre',
+                    'nombre','telefono','telefono_invalido',
+                    '¿Cuál es el nombre del niño/a?','Fecha de nacimiento del niño a evaluar',
+                    'edad_meses','edad_anios','rango_etario','Sexo',
+                    'talla_nino','talla_corregida','peso_nino','muac']
+
+        hoja_ent  = _reorder(ent, _pri_ent)
+        hoja_nin  = _reorder(nin, _pri_nin)
+        hoja_nh   = _reorder(nh,  ['_submission_id','Semana','Equipo','¿Cuál es el nombre del niño/a?',
+                                     'edad_meses','edad_anios','rango_etario'])
+
+        # ── PASO 7: Hoja Notas de tratamiento ────────────────────────────────
+        from datetime import datetime as _dt2
+        _notas = pd.DataFrame([
+            ('a', 'Columnas .1/.2 duplicadas', 'Consolidadas por coalesce; pares especiales edad_entrevistado/Edad_01 y edad_nino/Edad unificados', 'Aplicado'),
+            ('b', 'Normalización encuestador', f'{len(_ENC_ALIASES)} variantes → 18 nombres canónicos. Trinidad Granados → Gaby Pino (columna enc_reasignado)', 'Aplicado'),
+            ('c', 'Equipo/Región/Zona/Rol', 'Asignados desde DF_EQUIPOS vía encuestador normalizado', 'Aplicado'),
+            ('d', 'Corrección de talla', 'Niños >200 cm → ÷10. Adultas >3 m → ÷100. Flag talla_corregida', 'Aplicado'),
+            ('e', 'Corrección de fecha', 'Iker/Lucia Palacios Fuentes, Liam Argueta Lovo: 2026-05-18 → 2026-06-18', 'Aplicado'),
+            ('f', 'Correcciones geográficas', 'correcciones_geograficas.csv aplicado en carga', 'Aplicado'),
+            ('g', 'sin_nino_vinculado', 'Flag en hogar: perfil implica niño evaluado pero sin registro en Niños evaluados', 'Aplicado'),
+            ('h', 'Deduplicación niños Nivel 1', 'Mismo submission_id + nombre + DOB → una fila', 'Aplicado'),
+            ('h', 'Deduplicación niños Nivel 2', 'Mismo nombre + DOB + cantón + fecha_dia, distinto submission_id → una fila', 'Aplicado'),
+            ('i', 'Madre con varios niños', 'Ambos niños se mantienen; solo se deduplica datos repetidos de madre', 'Aplicado'),
+            ('j', 'Edad desde DOB', 'Calculada usando fecha_dia de cada registro (no date.today()). Adultas: ÷365.25; Niños: ÷30.44 meses', 'Aplicado'),
+            ('j', 'Casos implausibles edad', f'Edad <{EDAD_MINIMA_ENTREVISTADA} años → edad_implausible=True, rango_etario="revisar_edad". Alisson R. Martínez López (13.9a) calculada normalmente', 'Aplicado'),
+            ('k', 'rango_etario', '10 categorías: 0-5m, 6-11m, 12-23m, 24-59m, 5-9a, 10-14a, 15-17a, 18-24a, 25-59a, 60+a', 'Aplicado'),
+            ('l', 'Validación teléfono', 'telefono_invalido=True si ≠8 dígitos numéricos', 'Aplicado'),
+            ('m', 'Formato texto', 'Nombres de persona y niño/a en str.title(). Caserío sin estandarizar (pendiente decisión equipo)', 'Aplicado'),
+            ('bug', 'Fix _id_y', 'Columna residual _id_y eliminada en hoja Niños + Hogar', 'Corregido'),
+            ('pendiente', 'sin_nino_vinculado', 'Decisión equipo: ¿excluir de reportes niñez o solo marcar?', 'PENDIENTE'),
+            ('pendiente', 'Casos especiales duplicados', 'Sandra Patricia García de Hernández y Bessy Ivonne Banegas de Hernández — revisar manualmente', 'PENDIENTE'),
+            ('pendiente', 'Madres lactantes sin peso/talla', 'No excluidas; vacios visibles en la base', 'PENDIENTE'),
+            ('pendiente', 'Alisson Rubi Martínez López', '13.9 años, Madre lactante — evaluar reporte a protección/salvaguarda', 'PENDIENTE'),
+            ('info', 'Protocolo versión', 'Protocolo_Limpieza_Base_UNICEF_FUSAL.docx v8, 14/08/2026', f'Generado {_dt2.now().strftime("%Y-%m-%d %H:%M")}'),
+        ], columns=['Regla','Transformación','Detalle','Estado'])
+
+        # ── PASO 8: Registros todo junto ──────────────────────────────────────
+        _reg_n = nin.copy(); _reg_n.insert(0, 'tipo_registro', 'nino')
+        _reg_mat = pd.DataFrame()
+        if 'perfil' in ent.columns:
+            _df_m = ent[ent['perfil'].isin(PERFILES_MATERNAS)].copy()
+            _df_m.insert(0, 'tipo_registro',
+                         _df_m['perfil'].apply(lambda p: 'embarazada' if p in PERFILES_EMBARAZADA else 'lactante'))
+            _reg_mat = _df_m
+        _reg_adic = pd.DataFrame()
+        if df_adic_raw_in is not None and not df_adic_raw_in.empty:
+            _a = df_adic_raw_in.copy(); _a.insert(0, 'tipo_registro', 'nino_adicional')
+            _reg_adic = _a
+        hoja_reg = pd.concat([_reg_n, _reg_mat, _reg_adic], ignore_index=True)
+
+        # Niños adicionales
+        hoja_adic = df_adic_raw_in.copy() if df_adic_raw_in is not None and not df_adic_raw_in.empty else pd.DataFrame()
+
+        # Equipo de campo
+        hoja_eq = DF_EQUIPOS[['Equipo','Zona','Nombre','Rol']].copy().rename(
+            columns={'Nombre': 'encuestador', 'Zona': 'zona_asignada'})
+
+        return {
+            'Entrevistas (hogar)':    hoja_ent,
+            'Niños evaluados':        hoja_nin,
+            'Niños + Hogar':          hoja_nh,
+            'Registros (todo junto)': hoja_reg,
+            'Niños adicionales':      hoja_adic,
+            'Equipo de campo':        hoja_eq,
+            'Notas de tratamiento':   _notas,
+        }
+
+    try:
+        _hojas_tratadas = construir_base_tratada(df, ninos, df_adic_raw, df_ninos_raw, df_sec3_raw)
+        _n_ent_t  = len(_hojas_tratadas['Entrevistas (hogar)'])
+        _n_nin_t  = len(_hojas_tratadas['Niños evaluados'])
+        _n_sin_v  = int(_hojas_tratadas['Entrevistas (hogar)'].get('sin_nino_vinculado', pd.Series(False)).sum())
+        _n_impl   = int(_hojas_tratadas['Entrevistas (hogar)'].get('edad_implausible', pd.Series(False)).sum())
+        _n_tel    = int(_hojas_tratadas['Entrevistas (hogar)'].get('telefono_invalido', pd.Series(False)).sum())
+
+        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+        col_t1.metric("Entrevistas hogar",        _n_ent_t)
+        col_t2.metric("Niños evaluados",           _n_nin_t)
+        col_t3.metric("Sin niño vinculado",        _n_sin_v,  help="Perfil implica niño pero sin registro")
+        col_t4.metric("Teléfonos inválidos",       _n_tel,    help="Diferente a 8 dígitos")
+        if _n_impl:
+            st.warning(f"⚠️ {_n_impl} entrevistada(s) con edad implausible (<{EDAD_MINIMA_ENTREVISTADA} años) — revisar columna `edad_implausible`.")
+
+        from datetime import datetime as _dt3
+        _fecha_t = _dt3.now().strftime('%Y%m%d')
+        _buf_t = io.BytesIO()
+        with pd.ExcelWriter(_buf_t, engine='openpyxl') as _wt:
+            for _nh, _dh in _hojas_tratadas.items():
+                if not _dh.empty:
+                    _dh.to_excel(_wt, sheet_name=_nh[:31], index=False)
+        _buf_t.seek(0)
+        st.download_button(
+            f"⬇️ Descargar base tratada (protocolo aplicado) — {_fecha_t}.xlsx",
+            _buf_t,
+            f"UNICEF_FUSAL_Base_Tratada_{_fecha_t}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+    except Exception as _et:
+        st.error(f"Error generando base tratada: {_et}")
+        import traceback
+        st.code(traceback.format_exc())
+
     st.markdown("---")
     st.markdown("### 🗂️ Otras exportaciones")
     st.caption(
