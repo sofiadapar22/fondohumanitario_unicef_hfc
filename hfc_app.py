@@ -57,6 +57,9 @@ EQUIPOS = [
     ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Norma Rivera",      "Promotora"),
     ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Rosibel Arriola",   "Promotora"),
     ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Yeldi Pérez",       "Técnica Nutrición"),
+    # ── Equipo Santa Ana ──────────────────────────────────────────────────
+    ("Occidente",    "Equipo Santa Ana",            "Santa Ana Centro",    "Mauricio Paniagua", "Encuestador/a"),
+    ("Occidente",    "Equipo Santa Ana",            "Santa Ana Centro",    "Francisco Arévalo", "Encuestador/a"),
     # ── Coordinación (excluida de métricas) ────────────────────────────────
     # Tatiana Garay — Coordinadora zona SM
     # Trinidad Granados — Coordinadora (su 1 registro se reasigna vía alias)
@@ -90,13 +93,16 @@ ENC_ALIASES = {
     'Rosibel Arely Henríquez Vasquez':    'Rosibel Henríquez',
     'Yeldi Zeneida Marcelino Pérez':      'Yeldi Pérez',
     'Yeldi Marcelino':                    'Yeldi Pérez',
+    # ── Equipo Santa Ana (agregado ago 2026) ──────────────────────────────
+    'Francisco Arevalo':                  'Francisco Arévalo',
+    'Mauricio Paniagua ':                 'Mauricio Paniagua',   # variante con espacio
 }
 
 # Meta por zona (columna "Propuesta" del plan operativo)
 METAS_ZONA = {
     "San Miguel Centro":   400,
     "Ahuachapán Centro":   800,
-    "Santa Ana Centro":    400,   # en plan operativo; Equipo Occidente opera en Ahuachapán en la práctica
+    "Santa Ana Centro":    400,   # Equipo Santa Ana (Mauricio Paniagua, Francisco Arévalo)
     "San Salvador Este":   800,
     "San Salvador Centro": 800,
     "Usulután Este":       800,
@@ -1388,7 +1394,7 @@ with tab_escenarios:
 
     # ── Parámetros ──────────────────────────────────────────────────────────
     _FECHA_META  = date(2026, 9, 30)   # fecha objetivo de cierre tamizaje
-    _N_EQUIPOS   = 6                   # equipos activos
+    _N_EQUIPOS   = 7                   # equipos activos (incluye Equipo Santa Ana)
     _HOY         = date.today()
     # Días hábiles (lun-vie) restantes hasta el 30 sep
     _dias_rest   = max(int(np.busday_count(_HOY.isoformat(), _FECHA_META.isoformat())), 1)
@@ -2660,8 +2666,12 @@ with tab_export:
             return '60+ años'
 
         # Regla l: teléfono válido = 8 dígitos exactos
+        # Nota: pandas puede leer teléfonos como float (74193454.0) → convertir a int primero
         def _telefono_invalido(t):
-            s = _re.sub(r'\D', '', str(t))
+            try:
+                s = str(int(float(str(t))))
+            except (ValueError, TypeError):
+                s = _re.sub(r'\D', '', str(t))
             return len(s) != 8
 
         # ── PASO 1: Hogar ─────────────────────────────────────────────────────
