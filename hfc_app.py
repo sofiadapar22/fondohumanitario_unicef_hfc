@@ -63,6 +63,35 @@ EQUIPOS = [
 ]
 DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
 
+# Tabla de aliases de encuestadoras — nivel módulo para que sea accesible en exportación
+# IMPORTANTE: Rosibel Arriola y Rosibel Henríquez son personas DISTINTAS.
+ENC_ALIASES = {
+    # ── Variantes históricas ───────────────────────────────────────────
+    'Brenda Nerios':                      'Brenda Nerio',
+    'Fatima Gomez':                       'Fátima Gómez',
+    'Trinidad Granados':                  'Gaby Pino',      # Coord. → SS Este
+    # ── Nombres completos KoBo (versión jul 2026) ─────────────────────
+    'Brenda Lisseth Nerio Ramírez':       'Brenda Nerio',
+    'Briseyda Maryori Hernández Argueta': 'Maryori Hernández',
+    'Claudia Patricia Mendez Guardado':   'Claudia',
+    'Dámaris Gabriela González López':    'Damaris González',
+    'Damaris Gabriela González López':    'Damaris González',
+    'Dolores Victoria Alfaro Ochoa':      'Dolores',
+    'Fatima Arely Granados de Reyes':     'Arely Granados',
+    'Fátima Arely Granados de Reyes':     'Arely Granados',
+    'Fátima María Gómez de García':       'Fátima Gómez',
+    'Gabriela Pino Ventura':              'Gaby Pino',
+    'Geraldina Rocibel Arriola Natividad':'Rosibel Arriola',
+    'Helenn Virginia Romero Martínez':    'Helen Romero',
+    'Helen Virginia Romero Martínez':     'Helen Romero',
+    'Meyvin Yulissa Hernandez de Segovia':'Yulissa Hernández',
+    'Meyvin Yulissa Hernández de Segovia':'Yulissa Hernández',
+    'Norma Cecibeth Rivera de Arévalo':   'Norma Rivera',
+    'Rosibel Arely Henríquez Vasquez':    'Rosibel Henríquez',
+    'Yeldi Zeneida Marcelino Pérez':      'Yeldi Pérez',
+    'Yeldi Marcelino':                    'Yeldi Pérez',
+}
+
 # Meta por zona (columna "Propuesta" del plan operativo)
 METAS_ZONA = {
     "San Miguel Centro":   400,
@@ -168,37 +197,8 @@ def unificar(df, dist_map, cant_map, us_map):
     df['nombre']      = df['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
     df['encuestador'] = df['encuestador'].astype(str).str.strip().replace('nan', pd.NA)
 
-    # Normalización de nombres de encuestadoras:
-    # - Variantes históricas (nombres cortos con typos/sin tildes)
-    # - Nombres completos del KoBo actualizado (jul 2026) → nombre canónico corto
-    # IMPORTANTE: Rosibel Arriola y Rosibel Henríquez son personas DISTINTAS.
-    _ENC_ALIASES = {
-        # ── Variantes históricas ───────────────────────────────────────────
-        'Brenda Nerios':                      'Brenda Nerio',
-        'Fatima Gomez':                       'Fátima Gómez',
-        'Trinidad Granados':                  'Gaby Pino',      # Coord. → SS Este
-        # ── Nombres completos KoBo (versión jul 2026) ─────────────────────
-        'Brenda Lisseth Nerio Ramírez':       'Brenda Nerio',
-        'Briseyda Maryori Hernández Argueta': 'Maryori Hernández',
-        'Claudia Patricia Mendez Guardado':   'Claudia',
-        'Dámaris Gabriela González López':    'Damaris González',
-        'Damaris Gabriela González López':    'Damaris González',
-        'Dolores Victoria Alfaro Ochoa':      'Dolores',
-        'Fatima Arely Granados de Reyes':     'Arely Granados',
-        'Fátima Arely Granados de Reyes':     'Arely Granados',
-        'Fátima María Gómez de García':       'Fátima Gómez',
-        'Gabriela Pino Ventura':              'Gaby Pino',
-        'Geraldina Rocibel Arriola Natividad':'Rosibel Arriola',
-        'Helenn Virginia Romero Martínez':    'Helen Romero',
-        'Helen Virginia Romero Martínez':     'Helen Romero',
-        'Meyvin Yulissa Hernandez de Segovia':'Yulissa Hernández',
-        'Meyvin Yulissa Hernández de Segovia':'Yulissa Hernández',
-        'Norma Cecibeth Rivera de Arévalo':   'Norma Rivera',
-        'Rosibel Arely Henríquez Vasquez':    'Rosibel Henríquez',
-        'Yeldi Zeneida Marcelino Pérez':      'Yeldi Pérez',
-        'Yeldi Marcelino':                    'Yeldi Pérez',     # nombre corto anterior
-    }
-    df['encuestador'] = df['encuestador'].replace(_ENC_ALIASES)
+    # Normalización de encuestadoras usando tabla global ENC_ALIASES
+    df['encuestador'] = df['encuestador'].replace(ENC_ALIASES)
 
     df['start']     = pd.to_datetime(df['start'],    errors='coerce')
     df['end']       = pd.to_datetime(df['end'],      errors='coerce')
@@ -2612,7 +2612,7 @@ with tab_export:
             if 'encuestador' not in frame.columns:
                 return frame
             frame['encuestador'] = (frame['encuestador'].astype(str).str.strip()
-                                     .replace('nan', pd.NA).replace(_ENC_ALIASES))
+                                     .replace('nan', pd.NA).replace(ENC_ALIASES))
             # Columna para documentar reasignación Trinidad → Gaby Pino
             frame['enc_reasignado'] = (
                 frame['encuestador'] == 'Gaby Pino'
@@ -2815,7 +2815,7 @@ with tab_export:
         from datetime import datetime as _dt2
         _notas = pd.DataFrame([
             ('a', 'Columnas .1/.2 duplicadas', 'Consolidadas por coalesce; pares especiales edad_entrevistado/Edad_01 y edad_nino/Edad unificados', 'Aplicado'),
-            ('b', 'Normalización encuestador', f'{len(_ENC_ALIASES)} variantes → 18 nombres canónicos. Trinidad Granados → Gaby Pino (columna enc_reasignado)', 'Aplicado'),
+            ('b', 'Normalización encuestador', f'{len(ENC_ALIASES)} variantes → 18 nombres canónicos. Trinidad Granados → Gaby Pino (columna enc_reasignado)', 'Aplicado'),
             ('c', 'Equipo/Región/Zona/Rol', 'Asignados desde DF_EQUIPOS vía encuestador normalizado', 'Aplicado'),
             ('d', 'Corrección de talla', 'Niños >200 cm → ÷10. Adultas >3 m → ÷100. Flag talla_corregida', 'Aplicado'),
             ('e', 'Corrección de fecha', 'Iker/Lucia Palacios Fuentes, Liam Argueta Lovo: 2026-05-18 → 2026-06-18', 'Aplicado'),
