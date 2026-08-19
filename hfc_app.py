@@ -2482,6 +2482,10 @@ with tab_export:
         _reg_n = _dedup_frame(_reg_n)
         _reg_n = _add_equipo_semana(_reg_n)
         _reg_n.insert(0, 'tipo_registro', 'nino')
+        # Enlazar fecha_ent del hogar padre (via _submission_id → _id)
+        if 'fecha_ent' in df.columns and '_id' in df.columns and '_submission_id' in _reg_n.columns:
+            _fecha_map = df[['_id','fecha_ent']].drop_duplicates('_id').set_index('_id')['fecha_ent']
+            _reg_n['fecha_ent'] = _reg_n['_submission_id'].map(_fecha_map)
 
         # Maternas (del hogar)
         if 'perfil' in df.columns:
@@ -2849,6 +2853,10 @@ with tab_export:
 
         # ── PASO 8: Registros todo junto ──────────────────────────────────────
         _reg_n = nin.copy(); _reg_n.insert(0, 'tipo_registro', 'nino')
+        # Enlazar fecha_ent del hogar padre (via _submission_id → _id)
+        if 'fecha_ent' in ent.columns and '_id' in ent.columns and '_submission_id' in _reg_n.columns:
+            _fecha_map2 = ent[['_id','fecha_ent']].drop_duplicates('_id').set_index('_id')['fecha_ent']
+            _reg_n['fecha_ent'] = _reg_n['_submission_id'].map(_fecha_map2)
         _reg_mat = pd.DataFrame()
         if 'perfil' in ent.columns:
             _df_m = ent[ent['perfil'].isin(PERFILES_MATERNAS)].copy()
