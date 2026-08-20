@@ -209,9 +209,11 @@ def unificar(df, dist_map, cant_map, us_map):
     df['start']     = pd.to_datetime(df['start'],    errors='coerce')
     df['end']       = pd.to_datetime(df['end'],      errors='coerce')
     df['fecha_ent'] = pd.to_datetime(df['fecha_ent'],errors='coerce')
-    df['fecha_dia'] = df['start'].dt.date
-    df['semana']    = df['start'].dt.to_period('W').apply(lambda p: p.start_time.date() if pd.notna(p) else None)
-    df['mes']       = df['start'].dt.to_period('M').astype(str)
+    # Usar fecha_ent (fecha real de entrevista) como base; fallback a start si nula
+    _fecha_base     = df['fecha_ent'].fillna(df['start'])
+    df['fecha_dia'] = _fecha_base.dt.date
+    df['semana']    = _fecha_base.dt.to_period('W').apply(lambda p: p.start_time.date() if pd.notna(p) else None)
+    df['mes']       = _fecha_base.dt.to_period('M').astype(str)
     df['duracion_min'] = (df['end'] - df['start']).dt.total_seconds() / 60
 
     df['talla'] = pd.to_numeric(df['talla'], errors='coerce')
@@ -2385,6 +2387,24 @@ with tab_export:
         """Convierte fecha de inicio de semana -> 'Sem N (DD mon)'."""
         return sem_map.get(str(fecha), str(fecha) if pd.notna(fecha) else '')
 
+    def _fechas_solo_fecha(df):
+        """Convierte columnas datetime a date puro (sin horas) para Excel."""
+        _COLS_FECHA = ['fecha_ent', 'fecha_dia', 'semana', 'fecha_nac', 'start', 'end',
+                       'Fecha de la entrevista', 'Fecha de nacimiento del niño a evaluar',
+                       'Fecha de nacimiento de la persona entrevistada',
+                       'Fecha de última regla', 'Fecha probable de parto',
+                       '_submission__submission_time', '_submission_time']
+        df = df.copy()
+        for col in df.columns:
+            if col in _COLS_FECHA or 'fecha' in col.lower():
+                try:
+                    ser = pd.to_datetime(df[col], errors='coerce')
+                    if ser.notna().any():
+                        df[col] = ser.dt.strftime('%Y-%m-%d').where(ser.notna(), other=None)
+                except Exception:
+                    pass
+        return df
+
     def construir_base_fusal(df, ninos, df_adic_raw):
         """Genera base de exportación lo más raw posible del KoBo.
         Transformaciones aplicadas:
@@ -2549,7 +2569,7 @@ with tab_export:
         with pd.ExcelWriter(_buf_fusal, engine='openpyxl') as _w:
             for _nombre_hoja, _df_hoja in _hojas_fusal.items():
                 if not _df_hoja.empty:
-                    _df_hoja.to_excel(_w, sheet_name=_nombre_hoja, index=False)
+                    _fechas_solo_fecha(_df_hoja).to_excel(_w, sheet_name=_nombre_hoja, index=False)
         _buf_fusal.seek(0)
         st.download_button(
             f"⬇️ Descargar base FUSAL ({_fecha_export}).xlsx",
@@ -2908,7 +2928,7 @@ with tab_export:
         with pd.ExcelWriter(_buf_t, engine='openpyxl') as _wt:
             for _nh, _dh in _hojas_tratadas.items():
                 if not _dh.empty:
-                    _dh.to_excel(_wt, sheet_name=_nh[:31], index=False)
+                    _fechas_solo_fecha(_dh).to_excel(_wt, sheet_name=_nh[:31], index=False)
         _buf_t.seek(0)
         st.download_button(
             f"⬇️ Descargar base tratada (protocolo aplicado) — {_fecha_t}.xlsx",
