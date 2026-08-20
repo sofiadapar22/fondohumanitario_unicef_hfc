@@ -260,9 +260,8 @@ def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
     ref = df_main[[c for c in ref_cols if c in df_main.columns]].copy()
 
     frames = []
+    # Niños adicionales EXCLUIDOS de los cálculos del dashboard — solo van al export
     sheets_to_process = [(df_ninos, '_submission__id'), (df_sec3, '_submission__id')]
-    if df_adic is not None and not df_adic.empty:
-        sheets_to_process.append((df_adic, '_submission__id'))
     for sheet, id_col in sheets_to_process:
         if sheet.empty:
             continue
