@@ -3150,9 +3150,14 @@ with tab_unicef:
 
     AGE_GROUPS = ['0-5m','6-11m','12-23m','24-59m','5-9a','10-14a','15-17a','18-24a','25-59a','60+a']
 
-    def _unicef_edad_adulto(row, ref=date.today()):
+    def _unicef_edad_adulto(row, ref=None):
+        if ref is None: ref = date.today()
         e = row.get('edad_a', np.nan) if hasattr(row, 'get') else np.nan
         dob = row.get('dob_calc', pd.NaT) if hasattr(row, 'get') else pd.NaT
+        fecha_row = row.get('fecha_dia', None) if hasattr(row, 'get') else None
+        if fecha_row is not None:
+            try: ref = pd.Timestamp(fecha_row).date()
+            except: pass
         if pd.isna(e) and pd.notna(dob):
             try: e = (ref - dob.date()).days / 365.25
             except: e = np.nan
@@ -3164,7 +3169,8 @@ with tab_unicef:
         elif e < 60: return '25-59a'
         else: return '60+a'
 
-    def _unicef_edad_nino(dob, ref=date.today()):
+    def _unicef_edad_nino(dob, ref=None):
+        if ref is None: ref = date.today()
         if pd.isna(dob): return 'desc'
         try:
             m = (ref - dob.date()).days / 30.44
@@ -3190,16 +3196,21 @@ with tab_unicef:
             edad_a = edad_txt.apply(_parse_e)
             dob_col = df_main_sel.get('dob_calc', pd.Series(dtype=object)) if 'dob_calc' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
             sexo_col = df_main_sel.get('sexo_std_u', pd.Series(dtype=str)) if 'sexo_std_u' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+            fecha_col = df_main_sel.get('fecha_dia', pd.Series(dtype=object, index=df_main_sel.index)) if 'fecha_dia' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
             for i in df_main_sel.index:
-                g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT)})
+                g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT), 'fecha_dia': fecha_col.get(i, None)})
                 s = 'M' if 'masc' in str(sexo_col.get(i,'')).lower() else 'F'
                 bd[(g,s)] = bd.get((g,s),0) + 1
         # Niños
         if not df_ninos_sel.empty:
             dob_n = pd.to_datetime(df_ninos_sel.get('Fecha de nacimiento del niño a evaluar', pd.Series(dtype=object)), errors='coerce') if 'Fecha de nacimiento del niño a evaluar' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
             sexo_n = df_ninos_sel.get('Sexo', pd.Series(dtype=str, index=df_ninos_sel.index))
+            fecha_n = df_ninos_sel.get('fecha_dia', pd.Series(dtype=object, index=df_ninos_sel.index)) if 'fecha_dia' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
             for i in df_ninos_sel.index:
-                g = _unicef_edad_nino(dob_n.get(i, pd.NaT))
+                _ref_n = None
+                try: _ref_n = pd.Timestamp(fecha_n.get(i)).date()
+                except: pass
+                g = _unicef_edad_nino(dob_n.get(i, pd.NaT), ref=_ref_n)
                 s = 'M' if 'masc' in str(sexo_n.get(i,'')).lower() else 'F'
                 bd[(g,s)] = bd.get((g,s),0) + 1
         return bd
