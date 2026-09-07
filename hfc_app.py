@@ -3382,27 +3382,55 @@ with tab_unicef:
                 elif ind_key == 'REF':
                     _COL_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
                     _EMAC_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
-                    _nr = _mn[_mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)] if not _mn.empty and _COL_PT in _mn.columns else pd.DataFrame()
+                    _SI_RE = 'sí|si|1|true'
+                    
+                    # Niños: diagnóstico crítico + confirmación de referencia
+                    _col_ref_n = '¿Se brindó referencia?'
+                    _nr = pd.DataFrame()
+                    if not _mn.empty and _COL_PT in _mn.columns and _col_ref_n in _mn.columns:
+                        _mask_pt_n = _mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)
+                        _mask_ref_n = _mn[_col_ref_n].astype(str).str.lower().str.contains(_SI_RE, na=False)
+                        _nr = _mn[_mask_pt_n & _mask_ref_n]
+                        
+                    # Maternas: diagnóstico crítico + confirmación de referencia
                     _mr = pd.DataFrame()
                     if not _mm.empty:
                         _col_diag_m = next((c for c in _mm.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
                         _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
-                        if _col_diag_m and _col_perfil:
-                            _mask_m = (_mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False) & _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False))
-                            _mr = _mm[_mask_m]
+                        _col_ref_m = 'referencia' if 'referencia' in _mm.columns else None
+                        if _col_diag_m and _col_perfil and _col_ref_m:
+                            _mask_diag_m = _mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False)
+                            _mask_perf_m = _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
+                            _mask_ref_m = _mm[_col_ref_m].astype(str).str.lower().str.contains(_SI_RE, na=False)
+                            _mr = _mm[_mask_diag_m & _mask_perf_m & _mask_ref_m]
+                            
                     bd, disc_counts = _build_breakdown(_mr, _nr)
                     total = sum(bd.values())
+                    
                 elif ind_key == 'DESN':
                     _DESN_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
                     _COL_PT_D  = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
                     _COL_MUAC  = 'Diagnóstico nutricional según perímetro braquial'
+                    
+                    # Niños: Identificados en P/T o MUAC
                     _nd = pd.DataFrame()
                     if not _mn.empty:
                         _mask_d = pd.Series(False, index=_mn.index)
                         if _COL_PT_D in _mn.columns: _mask_d |= _mn[_COL_PT_D].astype(str).str.lower().str.contains(_DESN_RE, na=False)
                         if _COL_MUAC in _mn.columns: _mask_d |= _mn[_COL_MUAC].astype(str).str.lower().str.contains(_DESN_RE, na=False)
                         _nd = _mn[_mask_d]
-                    bd, disc_counts = _build_breakdown(pd.DataFrame(), _nd)
+                        
+                    # Maternas: Identificadas
+                    _md = pd.DataFrame()
+                    if not _mm.empty:
+                        _col_diag_m = next((c for c in _mm.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
+                        _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
+                        if _col_diag_m and _col_perfil:
+                            _mask_diag_m = _mm[_col_diag_m].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                            _mask_perf_m = _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
+                            _md = _mm[_mask_diag_m & _mask_perf_m]
+                            
+                    bd, disc_counts = _build_breakdown(_md, _nd)
                     total = sum(bd.values())
                 else:
                     total, bd, disc_counts = 0, {}, {'M_0_17':0, 'F_0_17':0, 'M_18+':0, 'F_18+':0}
