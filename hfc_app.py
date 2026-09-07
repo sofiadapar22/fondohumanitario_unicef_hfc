@@ -3217,32 +3217,46 @@ with tab_unicef:
 
     # Enriquecer df con columnas auxiliares para este tab
    # Enriquecer df con columnas auxiliares para este tab
+    # Enriquecer df con columnas auxiliares para este tab
     _df_u = df.copy() if not df.empty else pd.DataFrame()
     _ninos_u = ninos.copy() if not ninos.empty else pd.DataFrame()
 
-    # ── SELECTOR DE FECHAS PERSONALIZADO ──
-    st.markdown("**📅 Rango de fechas para el reporte UNICEF**")
+    # ── SELECTOR DE FECHAS Y MES DESTINO ──
+    st.markdown("**📅 Parámetros para el reporte UNICEF**")
     
-    # Fechas por defecto (min y max del dataset)
-    _min_date = pd.to_datetime('2026-01-01').date()
-    _max_date = pd.to_datetime('2026-12-31').date()
-    
-    if not _df_u.empty and 'fecha_dia' in _df_u.columns:
-        _fechas_validas = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dropna().dt.date
-        if not _fechas_validas.empty:
-            _min_date = _fechas_validas.min()
-            _max_date = _fechas_validas.max()
+    col1, col2 = st.columns(2)
+    with col1:
+        # Fechas por defecto fijas: 18 al 31 de agosto
+        _default_start = pd.to_datetime('2026-08-18').date()
+        _default_end   = pd.to_datetime('2026-08-31').date()
+        
+        # Limites del calendario según los datos disponibles
+        _cal_min = _default_start
+        _cal_max = _default_end
+        if not _df_u.empty and 'fecha_dia' in _df_u.columns:
+            _fechas_validas = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dropna().dt.date
+            if not _fechas_validas.empty:
+                _cal_min = min(_fechas_validas.min(), _default_start)
+                _cal_max = max(_fechas_validas.max(), _default_end)
 
-    rango_unicef = st.date_input(
-        "Selecciona inicio y fin (haz clic en dos fechas en el calendario):",
-        value=(_min_date, _max_date),
-        min_value=_min_date,
-        max_value=_max_date,
-        key="rango_unicef_input"
-    )
+        rango_unicef = st.date_input(
+            "1. Selecciona inicio y fin:",
+            value=(_default_start, _default_end),
+            min_value=_cal_min,
+            max_value=_cal_max,
+            key="rango_unicef_input"
+        )
+        
+    with col2:
+        mes_plantilla = st.selectbox(
+            "2. ¿En qué mes de la matriz escribimos?",
+            ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"],
+            index=1,
+            help="Debe coincidir exactamente con el texto de la columna 'Mes de Reporte' (ej. 2026-08)."
+        )
 
     if len(rango_unicef) != 2:
-        st.warning("⏳ Por favor selecciona una fecha de inicio y una fecha de fin para continuar.")
+        st.warning("⏳ Selecciona una fecha de inicio y fin para continuar.")
         st.stop()
 
     fecha_inicio, fecha_fin = rango_unicef
@@ -3253,7 +3267,8 @@ with tab_unicef:
         _df_u['fecha_dia_dt'] = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dt.date
         _df_u = _df_u[(_df_u['fecha_dia_dt'] >= fecha_inicio) & (_df_u['fecha_dia_dt'] <= fecha_fin)].copy()
         
-        _df_u['mes'] = _etiqueta_periodo  # Asigna el rango como "mes" para la tabla exportable
+        # ⚠️ CRÍTICO: Asignamos el mes en formato 2026-08 para hacer match con el Excel
+        _df_u['mes'] = mes_plantilla  
         
         import re as _re2
         def _pe(s):
@@ -3273,17 +3288,18 @@ with tab_unicef:
     if not _ninos_u.empty and 'fecha_dia' in _ninos_u.columns:
         _ninos_u['fecha_dia_dt'] = pd.to_datetime(_ninos_u['fecha_dia'], errors='coerce').dt.date
         _ninos_u = _ninos_u[(_ninos_u['fecha_dia_dt'] >= fecha_inicio) & (_ninos_u['fecha_dia_dt'] <= fecha_fin)].copy()
-        _ninos_u['mes'] = _etiqueta_periodo
+        _ninos_u['mes'] = mes_plantilla
 
     if _df_u.empty and _ninos_u.empty:
         st.warning(f"No se encontraron tamizajes entre el {fecha_inicio.strftime('%d/%m/%Y')} y el {fecha_fin.strftime('%d/%m/%Y')}.")
         st.stop()
     else:
-        _meses_sel = [_etiqueta_periodo]
+        _meses_sel = [mes_plantilla]
         
         with st.expander("🔍 Debug — valores en datos", expanded=False):
-            st.write("**Periodo filtrado:**", _etiqueta_periodo)
-
+            st.write("**Periodo filtrado matemáticamente:**", _etiqueta_periodo)
+            st.write("**Bloque a sobrescribir en el Excel:**", mes_plantilla)
+          
         INDICADORES = [
             ('TAM',  '# de personas tamizadas para detectar desnutrición aguda en los municipios priorizados.'),
             ('IYCF', '# de personas que se benefician de la orientación e información comunitaria sobre alimentación de lactantes y niñas/niños pequeños en situaciones de emergencia (IYCF-E).'),
