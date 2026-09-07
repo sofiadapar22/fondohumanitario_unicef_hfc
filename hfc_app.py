@@ -3369,60 +3369,43 @@ with tab_unicef:
                     _mn = pd.DataFrame()
 
                 if ind_key == 'TAM':
-                    # Solo maternas (embarazadas + lactantes) — excluir padres, cuidadores y madres sin perfil materna
                     _col_perfil_m = 'perfil' if 'perfil' in _mm.columns else ('Perfil de la persona entrevistada' if 'Perfil de la persona entrevistada' in _mm.columns else None)
                     _mm_mat = _mm[_mm[_col_perfil_m].isin(PERFILES_MATERNAS)] if (_col_perfil_m and not _mm.empty) else _mm
-                    # Las maternas se cuentan SIEMPRE en columnas adultas, aunque traigan hijos
-                    # (el hijo se cuenta aparte en _mn; no hay doble conteo porque son personas distintas)
-                    bd = _build_breakdown(_mm_mat, _mn)
-                    total = sum(bd.values())   # consistente con el desglose por edad
+                    bd, disc_counts = _build_breakdown(_mm_mat, _mn)
+                    total = sum(bd.values())
                 elif ind_key == 'IYCF':
-                    # Solo consejería de niños
                     _SI = 'Sí|Si|1|True'
                     _col_cons_n = '¿Se le brindó consejería a niños y niñas?'
-                    _mn_cons = pd.DataFrame()
-                    if not _mn.empty and _col_cons_n in _mn.columns:
-                        _mn_cons = _mn[_mn[_col_cons_n].astype(str).str.contains(_SI, case=False, na=False)]
-                    bd = _build_breakdown(pd.DataFrame(), _mn_cons)
+                    _mn_cons = _mn[_mn[_col_cons_n].astype(str).str.contains(_SI, case=False, na=False)] if not _mn.empty and _col_cons_n in _mn.columns else pd.DataFrame()
+                    bd, disc_counts = _build_breakdown(pd.DataFrame(), _mn_cons)
                     total = sum(bd.values())
                 elif ind_key == 'REF':
-                    # Niños: emaciado o emaciado severo en diagnóstico peso/talla
                     _COL_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
-                    _EMAC_RE = 'emaciado|desnutrici|aguda severa|aguda moderada'
-                    _nr = pd.DataFrame()
-                    if not _mn.empty and _COL_PT in _mn.columns:
-                        _nr = _mn[_mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)]
-                    # Maternas: embarazada/lactante con diagnóstico de desnutrición
+                    _EMAC_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
+                    _nr = _mn[_mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)] if not _mn.empty and _COL_PT in _mn.columns else pd.DataFrame()
                     _mr = pd.DataFrame()
                     if not _mm.empty:
-                        _col_diag_m = next((c for c in _mm.columns
-                                            if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
+                        _col_diag_m = next((c for c in _mm.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
                         _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
                         if _col_diag_m and _col_perfil:
-                            _mask_m = (
-                                _mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False) &
-                                _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
-                            )
+                            _mask_m = (_mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False) & _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False))
                             _mr = _mm[_mask_m]
-                    bd = _build_breakdown(_mr, _nr)
+                    bd, disc_counts = _build_breakdown(_mr, _nr)
                     total = sum(bd.values())
                 elif ind_key == 'DESN':
-                    # Desnutrición AGUDA: solo P/T (emaciado/emaciado severo) y MUAC
-                    _DESN_RE = 'emaciado|desnutrici|aguda severa|aguda moderada'
+                    _DESN_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
                     _COL_PT_D  = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
                     _COL_MUAC  = 'Diagnóstico nutricional según perímetro braquial'
                     _nd = pd.DataFrame()
                     if not _mn.empty:
                         _mask_d = pd.Series(False, index=_mn.index)
-                        if _COL_PT_D in _mn.columns:
-                            _mask_d |= _mn[_COL_PT_D].astype(str).str.lower().str.contains(_DESN_RE, na=False)
-                        if _COL_MUAC in _mn.columns:
-                            _mask_d |= _mn[_COL_MUAC].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        if _COL_PT_D in _mn.columns: _mask_d |= _mn[_COL_PT_D].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        if _COL_MUAC in _mn.columns: _mask_d |= _mn[_COL_MUAC].astype(str).str.lower().str.contains(_DESN_RE, na=False)
                         _nd = _mn[_mask_d]
-                    bd = _build_breakdown(pd.DataFrame(), _nd)
+                    bd, disc_counts = _build_breakdown(pd.DataFrame(), _nd)
                     total = sum(bd.values())
                 else:
-                    total, bd = 0, {}
+                    total, bd, disc_counts = 0, {}, {'M_0_17':0, 'F_0_17':0, 'M_18+':0, 'F_18+':0}
 
                 row = {
                     'Mes':       str(_mes_sel),
@@ -3430,12 +3413,12 @@ with tab_unicef:
                     'Distrito':  DIST_LABEL.get(dist, dist),
                     'Total':     total,
                     'Nuevos':    total,
+                    **disc_counts
                 }
                 for g in AGE_GROUPS:
-                    row[f'Niños {g}']  = bd.get((g,'M'), 0)
-                    row[f'Niñas {g}']  = bd.get((g,'F'), 0)
+                    row[f'Niños {g}'] = bd.get((g,'M'), 0)
+                    row[f'Niñas {g}'] = bd.get((g,'F'), 0)
 
-                # Vista resumida para la tabla en pantalla
                 rows_tabla.append({
                     'Mes':       str(_mes_sel),
                     'Indicador': ind_key,
@@ -3444,7 +3427,7 @@ with tab_unicef:
                     **{g: bd.get((g,'M'),0) + bd.get((g,'F'),0) for g in AGE_GROUPS},
                 })
                 rows_export.append(row)
-
+              
         df_tabla = pd.DataFrame(rows_tabla)
         df_export = pd.DataFrame(rows_export)
 
