@@ -3216,52 +3216,73 @@ with tab_unicef:
         return bd
 
     # Enriquecer df con columnas auxiliares para este tab
+   # Enriquecer df con columnas auxiliares para este tab
     _df_u = df.copy() if not df.empty else pd.DataFrame()
     _ninos_u = ninos.copy() if not ninos.empty else pd.DataFrame()
 
-    if not _df_u.empty:
+    # ── SELECTOR DE FECHAS PERSONALIZADO ──
+    st.markdown("**📅 Rango de fechas para el reporte UNICEF**")
+    
+    # Fechas por defecto (min y max del dataset)
+    _min_date = pd.to_datetime('2026-01-01').date()
+    _max_date = pd.to_datetime('2026-12-31').date()
+    
+    if not _df_u.empty and 'fecha_dia' in _df_u.columns:
+        _fechas_validas = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dropna().dt.date
+        if not _fechas_validas.empty:
+            _min_date = _fechas_validas.min()
+            _max_date = _fechas_validas.max()
+
+    rango_unicef = st.date_input(
+        "Selecciona inicio y fin (haz clic en dos fechas en el calendario):",
+        value=(_min_date, _max_date),
+        min_value=_min_date,
+        max_value=_max_date,
+        key="rango_unicef_input"
+    )
+
+    if len(rango_unicef) != 2:
+        st.warning("⏳ Por favor selecciona una fecha de inicio y una fecha de fin para continuar.")
+        st.stop()
+
+    fecha_inicio, fecha_fin = rango_unicef
+    _etiqueta_periodo = f"{fecha_inicio.strftime('%d/%m')} al {fecha_fin.strftime('%d/%m')}"
+
+    # ── FILTRO POR RANGO DE FECHAS ──
+    if not _df_u.empty and 'fecha_dia' in _df_u.columns:
+        _df_u['fecha_dia_dt'] = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dt.date
+        _df_u = _df_u[(_df_u['fecha_dia_dt'] >= fecha_inicio) & (_df_u['fecha_dia_dt'] <= fecha_fin)].copy()
+        
+        _df_u['mes'] = _etiqueta_periodo  # Asigna el rango como "mes" para la tabla exportable
+        
         import re as _re2
         def _pe(s):
             m = _re2.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
         _df_u['edad_txt'] = _df_u.get('edad_entrevistado', pd.Series(dtype=str, index=_df_u.index)) if 'edad_entrevistado' in _df_u.columns else pd.Series(dtype=str, index=_df_u.index)
         _df_u['edad_a']   = _df_u['edad_txt'].apply(_pe)
-        _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada') if 'Fecha de nacimiento de la persona entrevistada' in df_raw.columns else None
-        if _dob_raw is None:
-            _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada.1') if 'Fecha de nacimiento de la persona entrevistada.1' in df_raw.columns else None
+        
+        _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada') if 'Fecha de nacimiento de la persona entrevistada' in df_raw.columns else df_raw.get('Fecha de nacimiento de la persona entrevistada.1')
         if _dob_raw is not None and '_id' in df_raw.columns and '_id' in _df_u.columns:
             _dob_map = df_raw.set_index('_id')[_dob_raw.name] if hasattr(_dob_raw, 'name') else df_raw.set_index('_id').get('Fecha de nacimiento de la persona entrevistada')
             _df_u['dob_calc'] = pd.to_datetime(_df_u['_id'].map(_dob_map) if _dob_map is not None else pd.NaT, errors='coerce')
         else:
             _df_u['dob_calc'] = pd.NaT
+            
         _df_u['sexo_std_u'] = _df_u.get('sexo', pd.Series(dtype=str, index=_df_u.index)).astype(str).str.lower()
 
-    # ── Selector de mes ───────────────────────────────────────────────────────
-    _meses_disp = sorted(_df_u['mes'].dropna().unique().tolist()) if not _df_u.empty and 'mes' in _df_u.columns else []
-    if not _meses_disp:
-        st.warning("No hay datos cargados.")
-    else:
-        _meses_str = [str(m) for m in _meses_disp]
-        _meses_sel_str = st.multiselect(
-            "Meses de reporte (podés seleccionar varios)",
-            _meses_str,
-            default=[_meses_str[-1]],
-            key='unicef_mes'
-        )
-        if not _meses_sel_str:
-            st.warning("Seleccioná al menos un mes.")
-            st.stop()
-        _meses_sel = [p for p in _meses_disp if str(p) in _meses_sel_str]
+    if not _ninos_u.empty and 'fecha_dia' in _ninos_u.columns:
+        _ninos_u['fecha_dia_dt'] = pd.to_datetime(_ninos_u['fecha_dia'], errors='coerce').dt.date
+        _ninos_u = _ninos_u[(_ninos_u['fecha_dia_dt'] >= fecha_inicio) & (_ninos_u['fecha_dia_dt'] <= fecha_fin)].copy()
+        _ninos_u['mes'] = _etiqueta_periodo
 
+    if _df_u.empty and _ninos_u.empty:
+        st.warning(f"No se encontraron tamizajes entre el {fecha_inicio.strftime('%d/%m/%Y')} y el {fecha_fin.strftime('%d/%m/%Y')}.")
+        st.stop()
+    else:
+        _meses_sel = [_etiqueta_periodo]
+        
         with st.expander("🔍 Debug — valores en datos", expanded=False):
-            st.write("**Meses disponibles:**", _meses_disp)
-            st.write("**Meses seleccionados:**", _meses_sel)
-            if not _df_u.empty:
-                _dist_vals_m = _df_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _df_u.columns else []
-                st.write("**Municipio (maternas) — valores únicos:**", sorted(_dist_vals_m))
-            if not _ninos_u.empty:
-                _dist_vals_n = _ninos_u['Municipio'].dropna().unique().tolist() if 'Municipio' in _ninos_u.columns else []
-                st.write("**Municipio (niños) — valores únicos:**", sorted(_dist_vals_n))
-            st.write("**DISTRITOS_UNICEF:**", DISTRITOS_UNICEF)
+            st.write("**Periodo filtrado:**", _etiqueta_periodo)
 
         INDICADORES = [
             ('TAM',  '# de personas tamizadas para detectar desnutrición aguda en los municipios priorizados.'),
