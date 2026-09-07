@@ -3184,69 +3184,69 @@ with tab_unicef:
         elif m < 216: return '15-17a'
         else: return '25-59a'
 
-  def _build_breakdown(df_main_sel, df_ninos_sel):
-        """Devuelve dict {(grupo_edad, sexo): count} y conteos de discapacidad."""
-        import re as _re
-        bd = {}
-        disc_counts = {'M_0_17': 0, 'F_0_17': 0, 'M_18+': 0, 'F_18+': 0}
-
-        def _has_disability(row):
-            # Basado estrictamente en el Diccionario de Datos
-            cols_evaluar = [
-                '¿Posee alguna discapacidad?', 
-                '¿Posee alguna neurodivergencia?',
-                'nino_¿Posee alguna discapacidad?',
-                'nino_¿Posee alguna neurodivergencia?'
-            ]
-            for col in cols_evaluar:
-                if col in row.index:
-                    val = str(row[col]).strip().lower()
-                    if val in ['sí', 'si', 'true', '1']:
-                        return True
-            return False
-
-        # Adultos
-        if not df_main_sel.empty:
-            edad_txt = df_main_sel.get('edad_txt', pd.Series(dtype=str)) if 'edad_txt' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
-            def _parse_e(s):
-                m = _re.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
-            edad_a = edad_txt.apply(_parse_e)
-            dob_col = df_main_sel.get('dob_calc', pd.Series(dtype=object)) if 'dob_calc' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
-            sexo_col = df_main_sel.get('sexo_std_u', pd.Series(dtype=str)) if 'sexo_std_u' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
-            fecha_col = df_main_sel.get('fecha_dia', pd.Series(dtype=object, index=df_main_sel.index)) if 'fecha_dia' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
-            for i in df_main_sel.index:
-                g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT), 'fecha_dia': fecha_col.get(i, None)})
-                s = 'M' if 'masc' in str(sexo_col.get(i,'')).lower() else 'F'
-                bd[(g,s)] = bd.get((g,s),0) + 1
-                
-                # Clasificar discapacidad (Adultos)
-                if _has_disability(df_main_sel.loc[i]):
-                    age_years = edad_a.get(i, np.nan)
-                    if pd.isna(age_years) and pd.notna(dob_col.get(i, pd.NaT)) and pd.notna(fecha_col.get(i, None)):
-                        try: age_years = (pd.Timestamp(fecha_col.get(i)) - pd.Timestamp(dob_col.get(i))).days / 365.25
-                        except: pass
-                    is_under_18 = (age_years < 18) if pd.notna(age_years) else False 
-                    if is_under_18: disc_counts[f"{s}_0_17"] += 1
-                    else: disc_counts[f"{s}_18+"] += 1
-
-        # Niños
-        if not df_ninos_sel.empty:
-            dob_n = pd.to_datetime(df_ninos_sel.get('Fecha de nacimiento del niño a evaluar', pd.Series(dtype=object)), errors='coerce') if 'Fecha de nacimiento del niño a evaluar' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
-            sexo_n = df_ninos_sel.get('Sexo', pd.Series(dtype=str, index=df_ninos_sel.index))
-            fecha_n = df_ninos_sel.get('fecha_dia', pd.Series(dtype=object, index=df_ninos_sel.index)) if 'fecha_dia' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
-            for i in df_ninos_sel.index:
-                _ref_n = None
-                try: _ref_n = pd.Timestamp(fecha_n.get(i)).date()
-                except: pass
-                g = _unicef_edad_nino(dob_n.get(i, pd.NaT), ref=_ref_n)
-                s = 'M' if 'masc' in str(sexo_n.get(i,'')).lower() else 'F'
-                bd[(g,s)] = bd.get((g,s),0) + 1
-                
-                # Clasificar discapacidad (Niños)
-                if _has_disability(df_ninos_sel.loc[i]):
-                    disc_counts[f"{s}_0_17"] += 1 
-                    
-        return bd, disc_counts
+    def _build_breakdown(df_main_sel, df_ninos_sel):
+          """Devuelve dict {(grupo_edad, sexo): count} y conteos de discapacidad."""
+          import re as _re
+          bd = {}
+          disc_counts = {'M_0_17': 0, 'F_0_17': 0, 'M_18+': 0, 'F_18+': 0}
+  
+          def _has_disability(row):
+              # Basado estrictamente en el Diccionario de Datos
+              cols_evaluar = [
+                  '¿Posee alguna discapacidad?', 
+                  '¿Posee alguna neurodivergencia?',
+                  'nino_¿Posee alguna discapacidad?',
+                  'nino_¿Posee alguna neurodivergencia?'
+              ]
+              for col in cols_evaluar:
+                  if col in row.index:
+                      val = str(row[col]).strip().lower()
+                      if val in ['sí', 'si', 'true', '1']:
+                          return True
+              return False
+  
+          # Adultos
+          if not df_main_sel.empty:
+              edad_txt = df_main_sel.get('edad_txt', pd.Series(dtype=str)) if 'edad_txt' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+              def _parse_e(s):
+                  m = _re.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
+              edad_a = edad_txt.apply(_parse_e)
+              dob_col = df_main_sel.get('dob_calc', pd.Series(dtype=object)) if 'dob_calc' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
+              sexo_col = df_main_sel.get('sexo_std_u', pd.Series(dtype=str)) if 'sexo_std_u' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+              fecha_col = df_main_sel.get('fecha_dia', pd.Series(dtype=object, index=df_main_sel.index)) if 'fecha_dia' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
+              for i in df_main_sel.index:
+                  g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT), 'fecha_dia': fecha_col.get(i, None)})
+                  s = 'M' if 'masc' in str(sexo_col.get(i,'')).lower() else 'F'
+                  bd[(g,s)] = bd.get((g,s),0) + 1
+                  
+                  # Clasificar discapacidad (Adultos)
+                  if _has_disability(df_main_sel.loc[i]):
+                      age_years = edad_a.get(i, np.nan)
+                      if pd.isna(age_years) and pd.notna(dob_col.get(i, pd.NaT)) and pd.notna(fecha_col.get(i, None)):
+                          try: age_years = (pd.Timestamp(fecha_col.get(i)) - pd.Timestamp(dob_col.get(i))).days / 365.25
+                          except: pass
+                      is_under_18 = (age_years < 18) if pd.notna(age_years) else False 
+                      if is_under_18: disc_counts[f"{s}_0_17"] += 1
+                      else: disc_counts[f"{s}_18+"] += 1
+  
+          # Niños
+          if not df_ninos_sel.empty:
+              dob_n = pd.to_datetime(df_ninos_sel.get('Fecha de nacimiento del niño a evaluar', pd.Series(dtype=object)), errors='coerce') if 'Fecha de nacimiento del niño a evaluar' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
+              sexo_n = df_ninos_sel.get('Sexo', pd.Series(dtype=str, index=df_ninos_sel.index))
+              fecha_n = df_ninos_sel.get('fecha_dia', pd.Series(dtype=object, index=df_ninos_sel.index)) if 'fecha_dia' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
+              for i in df_ninos_sel.index:
+                  _ref_n = None
+                  try: _ref_n = pd.Timestamp(fecha_n.get(i)).date()
+                  except: pass
+                  g = _unicef_edad_nino(dob_n.get(i, pd.NaT), ref=_ref_n)
+                  s = 'M' if 'masc' in str(sexo_n.get(i,'')).lower() else 'F'
+                  bd[(g,s)] = bd.get((g,s),0) + 1
+                  
+                  # Clasificar discapacidad (Niños)
+                  if _has_disability(df_ninos_sel.loc[i]):
+                      disc_counts[f"{s}_0_17"] += 1 
+                      
+          return bd, disc_counts
     
     # Enriquecer df con columnas auxiliares para este tab
    # Enriquecer df con columnas auxiliares para este tab
