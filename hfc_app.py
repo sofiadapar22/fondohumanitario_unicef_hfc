@@ -221,19 +221,27 @@ def unificar(df, dist_map, cant_map, us_map):
     for c in ['peso', 'imc', 'eg_sem']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
-    # Decodificar geografía
-    df['distrito_cod']    = df['Distrito'].astype(str).where(df['Distrito'].notna())
-    df['canton_cod']      = df['Cantón'].astype(str).where(df['Cantón'].notna())
+    # Decodificar geografía (con búsqueda flexible de columnas)
+    _col_distrito = next((c for c in ['Distrito', 'distrito'] if c in df.columns), None)
+    _col_canton   = next((c for c in ['Cantón', 'canton', 'Canton'] if c in df.columns), None)
+    _col_muni     = next((c for c in ['Municipio', 'municipio'] if c in df.columns), None)
+
+    df['distrito_cod'] = df[_col_distrito].astype(str).where(df[_col_distrito].notna()) if _col_distrito else pd.Series(dtype=str, index=df.index)
+    df['canton_cod']   = df[_col_canton].astype(str).where(df[_col_canton].notna()) if _col_canton else pd.Series(dtype=str, index=df.index)
+    
     df['distrito_nombre'] = df['distrito_cod'].map(dist_map)
     df['canton_nombre']   = df['canton_cod'].map(cant_map)
-    df['unidad_cod_int']  = pd.to_numeric(df['unidad_cod'], errors='coerce')
+    
+    df['unidad_cod_int']  = pd.to_numeric(df.get('unidad_cod'), errors='coerce')
     df['unidad_nombre']   = df['unidad_cod_int'].map(us_map)
 
     # Asegurar que Municipio sea texto
-    df['Municipio'] = df['Municipio'].astype(object)
+    if _col_muni:
+        df['Municipio'] = df[_col_muni].astype(object)
+    else:
+        df['Municipio'] = pd.Series(dtype=object, index=df.index)
 
     return df
-
 
 def aplicar_correcciones(df, corr):
     if corr.empty:
