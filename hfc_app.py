@@ -1707,7 +1707,6 @@ with tab_indicadores:
             _c_te = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
             _c_pe = '¿Cuál es el diagnóstico nutricional de peso edad?'
             _c_pt = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
-            _c_muac = 'Diagnóstico nutricional según perímetro braquial'
 
             # 2. Generar Flags estrictos según definiciones de desnutrición (Niñez < 5)
             _CRO_RE = 'talla baja'
@@ -1717,11 +1716,8 @@ with tab_indicadores:
             _df_n5['f_cro'] = _df_n5[_c_te].astype(str).str.lower().str.contains(_CRO_RE, na=False) if _c_te in _df_n5.columns else False
             _df_n5['f_glo'] = _df_n5[_c_pe].astype(str).str.lower().str.contains(_GLO_RE, na=False) if _c_pe in _df_n5.columns else False
             
-            _df_n5['f_agu'] = False
-            if _c_pt in _df_n5.columns: 
-                _df_n5['f_agu'] |= _df_n5[_c_pt].astype(str).str.lower().str.contains(_AGU_RE, na=False)
-            if _c_muac in _df_n5.columns: 
-                _df_n5['f_agu'] |= _df_n5[_c_muac].astype(str).str.lower().str.contains(_AGU_RE, na=False)
+            # Aguda estrictamente calculada solo con la columna Peso/Talla (_c_pt)
+            _df_n5['f_agu'] = _df_n5[_c_pt].astype(str).str.lower().str.contains(_AGU_RE, na=False) if _c_pt in _df_n5.columns else False
 
             # 3. Cálculo de Dn Única: Si tiene Crónica O Global O Aguda (El operador | significa "O")
             _df_n5['f_unica'] = _df_n5['f_cro'] | _df_n5['f_glo'] | _df_n5['f_agu']
