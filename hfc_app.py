@@ -1735,8 +1735,9 @@ with tab_indicadores:
                 if _col in _df_n5.columns: 
                     _df_n5['f_dis'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
         
-            # 5. Construir la tabla cruzada por Municipio
-            _df_n5['zona_res'] = _df_n5['Municipio'].fillna('Desconocido').astype(str)
+            # 5. Construir la tabla cruzada por Distrito
+            _col_dist = next((c for c in ['distrito_nombre', 'Distrito', 'distrito'] if c in _df_n5.columns), 'Municipio')
+            _df_n5['zona_res'] = _df_n5[_col_dist].fillna('Desconocido').astype(str).str.strip()
             _zonas = sorted(_df_n5['zona_res'].unique())
         
             _metrics = [
