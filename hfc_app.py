@@ -1692,91 +1692,88 @@ with tab_indicadores:
             st.info("Sin columnas de diagnóstico o municipio disponibles.")
 
         st.markdown("---")
-st.markdown("---")
-
         # ── CUADRO RESUMEN GLOBAL DE DESNUTRICIÓN Y CONDICIONES (< 5 años) ──
-        st.markdown("### 📋 Cuadro Resumen de Condiciones por Zona (< 5 años)")
-        st.caption("El **Indicador de Dn Única** toma en cuenta la cantidad de niñez que presenta al menos un tipo de desnutrición (crónica, global o aguda).")
-
-        # 1. Filtro estricto para menores de 5 años (60 meses)
-        if 'edad_meses' in ninos.columns:
-            _df_n5 = ninos[ninos['edad_meses'] < 60].copy()
-        else:
-            _df_n5 = ninos.copy() # Fallback si no está calculada
-
-        if not _df_n5.empty:
-            # Expresión regular robusta para capturar cualquier tipo de desnutrición
-            _D_RE = 'emaciado|emaciaci|desnutrici|aguda|sebera|cebera|crónica|cronica|global'
-
-            # Variables oficiales de Kobo
-            _c_te = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
-            _c_pe = '¿Cuál es el diagnóstico nutricional de peso edad?'
-            _c_pt = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
-            _c_muac = 'Diagnóstico nutricional según perímetro braquial'
-
-            # 2. Generar Flags (Verdadero/Falso) por cada niño para cada condición
-            _df_n5['f_cro'] = _df_n5[_c_te].astype(str).str.lower().str.contains(_D_RE, na=False) if _c_te in _df_n5.columns else False
-            _df_n5['f_glo'] = _df_n5[_c_pe].astype(str).str.lower().str.contains(_D_RE, na=False) if _c_pe in _df_n5.columns else False
-            _df_n5['f_agu'] = False
-            if _c_pt in _df_n5.columns: 
-                _df_n5['f_agu'] |= _df_n5[_c_pt].astype(str).str.lower().str.contains(_D_RE, na=False)
-            if _c_muac in _df_n5.columns: 
-                _df_n5['f_agu'] |= _df_n5[_c_muac].astype(str).str.lower().str.contains(_D_RE, na=False)
-
-            # 3. Cálculo de Dn Única: Si tiene Crónica O Global O Aguda (El operador | significa "O")
-            _df_n5['f_unica'] = _df_n5['f_cro'] | _df_n5['f_glo'] | _df_n5['f_agu']
-
-            # 4. Flags de Neurodivergencia y Discapacidad 
-            _df_n5['f_neu'] = False
-            _df_n5['f_dis'] = False
-            for _col in ['¿Posee alguna neurodivergencia?', 'nino_¿Posee alguna neurodivergencia?']:
-                if _col in _df_n5.columns: 
-                    _df_n5['f_neu'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
-            for _col in ['¿Posee alguna discapacidad?', 'nino_¿Posee alguna discapacidad?']:
-                if _col in _df_n5.columns: 
-                    _df_n5['f_dis'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
-
-            # 5. Construir la tabla cruzada por Municipio
-            _df_n5['zona_res'] = _df_n5['Municipio'].fillna('Desconocido').astype(str)
-            _zonas = sorted(_df_n5['zona_res'].unique())
-
-            _metrics = [
-                ('Desnutrición crónica', 'f_cro'),
-                ('Desnutrición Global', 'f_glo'),
-                ('Desnutrición aguda', 'f_agu'),
-                ('Neurodivergencia', 'f_neu'),
-                ('Discapacidades', 'f_dis'),
-                ('Indicador de Dn Única', 'f_unica')
-            ]
-
-            _filas_resumen = []
-            for _label, _col in _metrics:
-                _row = {'Indicador': _label}
-                for _z in _zonas:
-                    _df_z = _df_n5[_df_n5['zona_res'] == _z]
-                    _n_tot = len(_df_z)
-                    _sum = int(_df_z[_col].sum())
-                    _pct = (_sum / _n_tot * 100) if _n_tot > 0 else 0
-                    
-                    # Formato plano para evitar errores de PyArrow en Streamlit
-                    _row[f"{_z} (Total)"] = str(_sum)
-                    _row[f"{_z} (%)"] = f"{_pct:.1f}%"
-                _filas_resumen.append(_row)
-
-            # Fila final de "n=" (Población total evaluada por zona)
-            _row_n = {'Indicador': 'n='}
-            for _z in _zonas:
-                _n_tot = len(_df_n5[_df_n5['zona_res'] == _z])
-                _row_n[f"{_z} (Total)"] = str(_n_tot)
-                _row_n[f"{_z} (%)"] = ""
-            _filas_resumen.append(_row_n)
-
-            # Convertir estrictamente todo a String para garantizar estabilidad visual
-            _df_final = pd.DataFrame(_filas_resumen).astype(str)
-            st.dataframe(_df_final, use_container_width=True, hide_index=True)
-        else:
-            st.info("No hay registros de niños menores de 5 años para procesar este cuadro.")
-          
+                st.markdown("### 📋 Cuadro Resumen de Condiciones por Zona (< 5 años)")
+                st.caption("El **Indicador de Dn Única** toma en cuenta la cantidad de niñez que presenta al menos un tipo de desnutrición (crónica, global o aguda).")
+        
+                # 1. Filtro estricto para menores de 5 años (60 meses)
+                if 'edad_meses' in ninos.columns:
+                    _df_n5 = ninos[ninos['edad_meses'] < 60].copy()
+                else:
+                    _df_n5 = ninos.copy() # Fallback si no está calculada
+        
+                if not _df_n5.empty:
+                    # Expresión regular robusta para capturar cualquier tipo de desnutrición
+                    _D_RE = 'emaciado|emaciaci|desnutrici|aguda|sebera|cebera|crónica|cronica|global'
+        
+                    # Variables oficiales de Kobo
+                    _c_te = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+                    _c_pe = '¿Cuál es el diagnóstico nutricional de peso edad?'
+                    _c_pt = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+                    _c_muac = 'Diagnóstico nutricional según perímetro braquial'
+        
+                    # 2. Generar Flags (Verdadero/Falso) por cada niño para cada condición
+                    _df_n5['f_cro'] = _df_n5[_c_te].astype(str).str.lower().str.contains(_D_RE, na=False) if _c_te in _df_n5.columns else False
+                    _df_n5['f_glo'] = _df_n5[_c_pe].astype(str).str.lower().str.contains(_D_RE, na=False) if _c_pe in _df_n5.columns else False
+                    _df_n5['f_agu'] = False
+                    if _c_pt in _df_n5.columns: 
+                        _df_n5['f_agu'] |= _df_n5[_c_pt].astype(str).str.lower().str.contains(_D_RE, na=False)
+                    if _c_muac in _df_n5.columns: 
+                        _df_n5['f_agu'] |= _df_n5[_c_muac].astype(str).str.lower().str.contains(_D_RE, na=False)
+        
+                    # 3. Cálculo de Dn Única: Si tiene Crónica O Global O Aguda (El operador | significa "O")
+                    _df_n5['f_unica'] = _df_n5['f_cro'] | _df_n5['f_glo'] | _df_n5['f_agu']
+        
+                    # 4. Flags de Neurodivergencia y Discapacidad 
+                    _df_n5['f_neu'] = False
+                    _df_n5['f_dis'] = False
+                    for _col in ['¿Posee alguna neurodivergencia?', 'nino_¿Posee alguna neurodivergencia?']:
+                        if _col in _df_n5.columns: 
+                            _df_n5['f_neu'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
+                    for _col in ['¿Posee alguna discapacidad?', 'nino_¿Posee alguna discapacidad?']:
+                        if _col in _df_n5.columns: 
+                            _df_n5['f_dis'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
+        
+                    # 5. Construir la tabla cruzada por Municipio
+                    _df_n5['zona_res'] = _df_n5['Municipio'].fillna('Desconocido').astype(str)
+                    _zonas = sorted(_df_n5['zona_res'].unique())
+        
+                    _metrics = [
+                        ('Desnutrición crónica', 'f_cro'),
+                        ('Desnutrición Global', 'f_glo'),
+                        ('Desnutrición aguda', 'f_agu'),
+                        ('Neurodivergencia', 'f_neu'),
+                        ('Discapacidades', 'f_dis'),
+                        ('Indicador de Dn Única', 'f_unica')
+                    ]
+        
+                    _filas_resumen = []
+                    for _label, _col in _metrics:
+                        _row = {'Indicador': _label}
+                        for _z in _zonas:
+                            _df_z = _df_n5[_df_n5['zona_res'] == _z]
+                            _n_tot = len(_df_z)
+                            _sum = int(_df_z[_col].sum())
+                            _pct = (_sum / _n_tot * 100) if _n_tot > 0 else 0
+                            
+                            # Formato plano para evitar errores de PyArrow en Streamlit
+                            _row[f"{_z} (Total)"] = str(_sum)
+                            _row[f"{_z} (%)"] = f"{_pct:.1f}%"
+                        _filas_resumen.append(_row)
+        
+                    # Fila final de "n=" (Población total evaluada por zona)
+                    _row_n = {'Indicador': 'n='}
+                    for _z in _zonas:
+                        _n_tot = len(_df_n5[_df_n5['zona_res'] == _z])
+                        _row_n[f"{_z} (Total)"] = str(_n_tot)
+                        _row_n[f"{_z} (%)"] = ""
+                    _filas_resumen.append(_row_n)
+        
+                    # Convertir estrictamente todo a String para garantizar estabilidad visual
+                    _df_final = pd.DataFrame(_filas_resumen).astype(str)
+                    st.dataframe(_df_final, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No hay registros de niños menores de 5 años para procesar este cuadro.")
         # ── Histogramas ──
         st.markdown("### 📊 Distribución de peso y talla")
         col_h1, col_h2 = st.columns(2)
