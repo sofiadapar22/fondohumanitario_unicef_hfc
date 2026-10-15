@@ -905,7 +905,7 @@ tasa_actual     = total_tamizados / dias_campo if dias_campo > 0 else 0
 # ══════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════
-tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_ref_check, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export, tab_unicef = st.tabs([
+tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_ref_check, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export, tab_tablas_mun, tab_unicef = st.tabs([
     "📊 Avance General",
     "🎯 Proyección & Escenarios",
     "🥗 Indicadores Nutricionales",
@@ -917,6 +917,7 @@ tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_ref_check, tab_dur, 
     "👩‍💼 Por Encuestadora",
     "📍 Geo / Correcciones",
     "📥 Exportar",
+    "📑 Tablas por municipio",
     "🇺🇳 Reporte UNICEF",
 ])
 
@@ -3214,7 +3215,327 @@ with tab_export:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.success("✅ Sin flags — no hay reporte que exportar.")
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: TABLAS NUTRICIONALES POR MUNICIPIO  (solicitud oct 2026)
+# ───────────────────────────────────────────────────────────────────────────────
+# INSTRUCCIONES DE INTEGRACIÓN EN hfc_app.py
+#
+# 1) En la línea de st.tabs([...]) agrega la variable y la etiqueta nuevas:
+#
+#    tab_avance, ..., tab_export, tab_tablas_mun, tab_unicef = st.tabs([
+#        "📊 Avance General",
+#        ...
+#        "📥 Exportar",
+#        "📑 Tablas por municipio",     # ← NUEVA
+#        "🇺🇳 Reporte UNICEF",
+#    ])
+#
+# 2) Pega TODO este bloque JUSTO ANTES de la sección
+#    "# TAB: REPORTE UNICEF"  (ese bloque usa st.stop(), y si este código
+#    queda después, no se ejecutaría cuando no hay datos en el rango UNICEF).
+#
+# Usa los mismos objetos ya filtrados por el sidebar: `df` (hogar) y `ninos`.
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_tablas_mun:
+    import re as _re_tm
 
+    st.subheader("📑 Estado nutricional por municipio")
+    st.caption(
+        "Respeta los filtros del sidebar. **Prevalencia (%) = casos ÷ evaluados** con "
+        "diagnóstico registrado en ese indicador (los registros sin dato no entran al denominador)."
+    )
+
+    # ── Definiciones ─────────────────────────────────────────────────────────
+    _C_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+    _C_TE = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+    _C_PE = '¿Cuál es el diagnóstico nutricional de peso edad?'
+
+    # (nombre, columna KoBo, regex que identifica el caso)
+    INDIC_NINOS = [
+        ('Desnutrición aguda (P/T)',   _C_PT, r'desnutrici|emaciad|emaciaci'),
+        ('Desnutrición crónica (T/E)', _C_TE, r'talla baja|desnutrici|retardo'),
+        ('Desnutrición global (P/E)',  _C_PE, r'desnutrici|bajo peso|peso bajo'),
+    ]
+    _SEV_RE  = r'sever|sebera|cebera'          # incluye errores de digitación vistos en KoBo
+    _VACIOS  = ['', 'nan', 'none', 'nat', 'sin dato']
+    GRUPOS_EDAD = ['0-5 meses', '6-11 meses', '12-23 meses', '24-59 meses', 'Revisar edad']
+    CATS_M = ['Bajo peso', 'Normal', 'Sobrepeso', 'Obesidad']
+
+    def _pct(n, d):
+        n = np.asarray(n, dtype=float); d = np.asarray(d, dtype=float)
+        return np.where(d > 0, np.round(n / np.where(d > 0, d, 1) * 100, 1), np.nan)
+
+    def _clasif_nino(serie, cond_re):
+        """Devuelve (válido, moderada, severa). 'Riesgo de...' NO cuenta como caso."""
+        s = serie.astype(str).str.lower().str.strip()
+        valido = serie.notna() & ~s.isin(_VACIOS)
+        cond = (valido & s.str.contains(cond_re, regex=True, na=False)
+                & ~s.str.contains('riesgo', na=False))
+        sev = cond & s.str.contains(_SEV_RE, regex=True, na=False)
+        mod = cond & ~sev
+        return valido, mod, sev
+
+    def _sexo_nino(serie):
+        s = serie.astype(str).str.lower().str.strip()
+        return np.select(
+            [s.str.contains('masc|hombre', na=False) | s.isin(['m', 'niño', 'nino']),
+             s.str.contains('fem|mujer', na=False)   | s.isin(['f', 'niña', 'nina'])],
+            ['Niño', 'Niña'], default='Sin dato')
+
+    def _orden_total(frame, col):
+        frame = frame.copy()
+        frame['_tot'] = frame[col] == 'TOTAL'
+        return frame
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. NIÑOS Y NIÑAS
+    # ══════════════════════════════════════════════════════════════════════════
+    _n = ninos.copy() if not ninos.empty else pd.DataFrame()
+    tabla_ninos_res = pd.DataFrame()
+    tabla_ninos_det = pd.DataFrame()
+
+    if not _n.empty:
+        _n['Municipio_t'] = (_n['Municipio'].fillna('Sin municipio').astype(str)
+                             if 'Municipio' in _n.columns else 'Sin municipio')
+        _dob_col = 'Fecha de nacimiento del niño a evaluar'
+        _dob = (pd.to_datetime(_n[_dob_col], errors='coerce') if _dob_col in _n.columns
+                else pd.Series(pd.NaT, index=_n.index))
+        _ref = (pd.to_datetime(_n['fecha_dia'], errors='coerce') if 'fecha_dia' in _n.columns
+                else pd.Series(pd.NaT, index=_n.index))
+        _em = (_ref - _dob).dt.days / 30.44           # edad en meses a la fecha de entrevista
+        _n['Grupo de edad'] = np.select(
+            [(_em >= 0) & (_em < 6), (_em >= 6) & (_em < 12),
+             (_em >= 12) & (_em < 24), (_em >= 24) & (_em < 60)],
+            GRUPOS_EDAD[:4], default='Revisar edad')
+        _n['Sexo_t'] = _sexo_nino(_n['Sexo']) if 'Sexo' in _n.columns else 'Sin dato'
+
+        def _tabla_ninos(dfn, keys):
+            vals = ['Evaluados', 'Moderada (n)', 'Severa (n)']
+            partes = []
+            for nombre, col, cre in INDIC_NINOS:
+                if col not in dfn.columns:
+                    continue
+                valido, mod, sev = _clasif_nino(dfn[col], cre)
+                tmp = dfn[keys].copy()
+                tmp['Evaluados']    = valido.astype(int)
+                tmp['Moderada (n)'] = mod.astype(int)
+                tmp['Severa (n)']   = sev.astype(int)
+                g = tmp.groupby(keys, dropna=False)[vals].sum().reset_index()
+                # Fila TOTAL (todos los municipios)
+                if len(keys) > 1:
+                    t = tmp.groupby(keys[1:], dropna=False)[vals].sum().reset_index()
+                else:
+                    t = tmp[vals].sum().to_frame().T
+                t[keys[0]] = 'TOTAL'
+                g = pd.concat([g, t[keys + vals]], ignore_index=True)
+                g['Indicador'] = nombre
+                partes.append(g)
+            if not partes:
+                return pd.DataFrame()
+            out = pd.concat(partes, ignore_index=True)
+            out[vals] = out[vals].astype(int)
+            out['Total casos (n)'] = out['Moderada (n)'] + out['Severa (n)']
+            for c in ['Moderada', 'Severa', 'Total casos']:
+                out[f'{c} (%)'] = _pct(out[f'{c} (n)'], out['Evaluados'])
+            out = _orden_total(out, keys[0])
+            if 'Grupo de edad' in out.columns:
+                out['Grupo de edad'] = pd.Categorical(out['Grupo de edad'], GRUPOS_EDAD, ordered=True)
+            out = out.sort_values(['Indicador', '_tot', keys[0]] + keys[1:]).drop(columns='_tot')
+            orden = ([keys[0], 'Indicador'] + keys[1:] +
+                     ['Evaluados', 'Moderada (n)', 'Moderada (%)', 'Severa (n)', 'Severa (%)',
+                      'Total casos (n)', 'Total casos (%)'])
+            return (out[orden].rename(columns={'Municipio_t': 'Municipio', 'Sexo_t': 'Sexo'})
+                    .reset_index(drop=True))
+
+        tabla_ninos_res = _tabla_ninos(_n, ['Municipio_t'])
+        tabla_ninos_det = _tabla_ninos(_n, ['Municipio_t', 'Grupo de edad', 'Sexo_t'])
+
+        st.markdown("### 👶 Niños y niñas — resumen por municipio")
+        if tabla_ninos_res.empty:
+            st.info("No se encontraron columnas de diagnóstico en la base.")
+        else:
+            st.dataframe(tabla_ninos_res, use_container_width=True, hide_index=True)
+
+            st.markdown("### 👶 Niños y niñas — por grupo de edad y sexo")
+            _mun_opts = ['Todos'] + [m for m in tabla_ninos_det['Municipio'].unique() if m != 'TOTAL'] + ['TOTAL']
+            _sel_m = st.selectbox("Municipio", _mun_opts, key='tm_mun_det')
+            _ind_opts = ['Todos'] + [i[0] for i in INDIC_NINOS]
+            _sel_i = st.selectbox("Indicador", _ind_opts, key='tm_ind_det')
+            _vista = tabla_ninos_det.copy()
+            if _sel_m != 'Todos': _vista = _vista[_vista['Municipio'] == _sel_m]
+            if _sel_i != 'Todos': _vista = _vista[_vista['Indicador'] == _sel_i]
+            st.dataframe(_vista, use_container_width=True, hide_index=True)
+
+            _n_rev = int((_n['Grupo de edad'] == 'Revisar edad').sum())
+            if _n_rev:
+                st.caption(f"⚠️ {_n_rev} niño(s) en 'Revisar edad': sin fecha de nacimiento válida o con ≥60 meses.")
+
+        with st.expander("🔍 Verificar cómo se clasificaron las categorías de KoBo"):
+            st.caption("Revisa que cada texto de KoBo caiga en la clasificación correcta. "
+                       "Si alguna sale mal, ajusta los regex de INDIC_NINOS o _SEV_RE.")
+            for nombre, col, cre in INDIC_NINOS:
+                if col in _n.columns:
+                    _vc = _n[col].fillna('(vacío)').astype(str).value_counts().reset_index()
+                    _vc.columns = ['Valor en KoBo', 'N']
+                    _v, _mo, _se = _clasif_nino(_vc['Valor en KoBo'].replace('(vacío)', np.nan), cre)
+                    _vc['Clasificado como'] = np.select([_se, _mo, _v], ['Severa', 'Moderada', 'No es caso'],
+                                                        default='Sin dato (excluido)')
+                    st.markdown(f"**{nombre}**")
+                    st.dataframe(_vc, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin datos de niños/as en la vista actual.")
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. MUJERES EMBARAZADAS Y LACTANTES
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 🤰🤱 Mujeres embarazadas y lactantes — estado nutricional")
+    tabla_mujeres = pd.DataFrame()
+    _m = pd.DataFrame()
+    if 'perfil' in df.columns:
+        # Misma lógica de conteo que el tablero: dedup por (nombre, perfil)
+        _m = (df[df['perfil'].isin(PERFILES_MATERNAS)].dropna(subset=['nombre'])
+              .drop_duplicates(subset=['nombre', 'perfil']).copy())
+
+    if not _m.empty:
+        _m['Municipio_t'] = (_m['Municipio'].fillna('Sin municipio').astype(str)
+                             if 'Municipio' in _m.columns else 'Sin municipio')
+        _m['Tipo'] = np.where(_m['perfil'].isin(PERFILES_EMBARAZADA), 'Embarazada', 'Lactante')
+
+        # a) Diagnóstico de texto de KoBo (si existe en el formulario)
+        _col_dx_m = next((c for c in _m.columns
+                          if any(k in c.lower() for k in ['estado nutricional', 'diagnóstico nutricional',
+                                                          'diagnostico nutricional'])
+                          and 'niño' not in c.lower() and 'braquial' not in c.lower()), None)
+
+        def _cat_texto(v):
+            s = str(v).lower().strip()
+            if s in _VACIOS: return None
+            if 'obes' in s: return 'Obesidad'
+            if 'sobrepeso' in s: return 'Sobrepeso'
+            if _re_tm.search(r'bajo peso|desnutri|enflaquec|delgadez', s): return 'Bajo peso'
+            if _re_tm.search(r'normal|adecuad', s): return 'Normal'
+            return None
+
+        _cat_txt = _m[_col_dx_m].apply(_cat_texto) if _col_dx_m else pd.Series(None, index=_m.index, dtype=object)
+
+        # b) Respaldo: IMC (del formulario o calculado con peso/talla)
+        _imc   = pd.to_numeric(_m['imc'], errors='coerce')   if 'imc'   in _m.columns else pd.Series(np.nan, index=_m.index)
+        _peso  = pd.to_numeric(_m['peso'], errors='coerce')  if 'peso'  in _m.columns else pd.Series(np.nan, index=_m.index)
+        _talla = pd.to_numeric(_m['talla'], errors='coerce') if 'talla' in _m.columns else pd.Series(np.nan, index=_m.index)
+        _imc_calc = (_peso / _talla.pow(2)).where(_talla.between(1.3, 2.0) & _peso.between(30, 150))
+        _imc = _imc.where(_imc.between(10, 60), _imc_calc)
+        _cat_imc = pd.Series(np.select(
+            [_imc < 18.5, _imc < 25, _imc < 30, _imc >= 30],
+            ['Bajo peso', 'Normal', 'Sobrepeso', 'Obesidad'], default=''), index=_m.index).replace('', None)
+
+        _m['IMC usado'] = _imc.round(1)
+        _m['Clasificación'] = _cat_txt.where(_cat_txt.notna(), _cat_imc)
+        _m['Fuente clasificación'] = np.where(_cat_txt.notna(), 'Diagnóstico KoBo',
+                                              np.where(_cat_imc.notna(), 'IMC', 'Sin dato'))
+
+        def _tabla_mujeres(dfm):
+            base = pd.concat([dfm, dfm.assign(Municipio_t='TOTAL')], ignore_index=True)
+            base = pd.concat([base, base.assign(Tipo='Total (emb. + lact.)')], ignore_index=True)
+            for c in CATS_M:
+                base[f'{c} (n)'] = (base['Clasificación'] == c).astype(int)
+            out = (base.groupby(['Municipio_t', 'Tipo'])
+                   .agg(**{'Registradas': ('Clasificación', 'size'),
+                           'Evaluadas (con clasificación)': ('Clasificación', 'count')},
+                        **{f'{c} (n)': (f'{c} (n)', 'sum') for c in CATS_M})
+                   .reset_index())
+            for c in CATS_M:
+                out[f'{c} (%)'] = _pct(out[f'{c} (n)'], out['Evaluadas (con clasificación)'])
+            out = _orden_total(out, 'Municipio_t')
+            out['Tipo'] = pd.Categorical(out['Tipo'], ['Embarazada', 'Lactante', 'Total (emb. + lact.)'], ordered=True)
+            out = out.sort_values(['_tot', 'Municipio_t', 'Tipo']).drop(columns='_tot')
+            cols = (['Municipio_t', 'Tipo', 'Registradas', 'Evaluadas (con clasificación)'] +
+                    [x for c in CATS_M for x in (f'{c} (n)', f'{c} (%)')])
+            return out[cols].rename(columns={'Municipio_t': 'Municipio'}).reset_index(drop=True)
+
+        tabla_mujeres = _tabla_mujeres(_m)
+        st.dataframe(tabla_mujeres, use_container_width=True, hide_index=True)
+
+        _fuentes = _m['Fuente clasificación'].value_counts().to_dict()
+        st.caption(
+            f"Fuente de la clasificación → {', '.join(f'{k}: {v}' for k, v in _fuentes.items())}. "
+            + (f"Columna de diagnóstico usada: «{_col_dx_m}». " if _col_dx_m else
+               "No se encontró columna de diagnóstico de la mujer; se usó IMC (OMS: <18.5 bajo peso, "
+               "25–29.9 sobrepeso, ≥30 obesidad). ")
+            + "⚠️ Para embarazadas lo correcto es IMC según semana gestacional; si el tablero/KoBo ya trae "
+              "esa clasificación, se usa esa en lugar del IMC."
+        )
+
+        with st.expander("🔍 Ver registros de mujeres sin clasificación"):
+            _sin = _m[_m['Clasificación'].isna()]
+            _cs = [c for c in ['_id', 'nombre', 'Tipo', 'Municipio_t', 'encuestador', 'peso', 'talla', 'imc'] if c in _sin.columns]
+            st.dataframe(_sin[_cs].rename(columns={'Municipio_t': 'Municipio'}), use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin registros de embarazadas o lactantes en la vista actual.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. DESCARGA EXCEL
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    if tabla_ninos_res.empty and tabla_mujeres.empty:
+        st.info("No hay tablas para descargar.")
+    else:
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        from datetime import datetime as _dt_tm
+
+        _notas_tm = pd.DataFrame([
+            ('Fuente', 'Base KoBo con limpieza HFC aplicada (aliases, correcciones geográficas, deduplicación de niños).'),
+            ('Filtros', 'Se respetan los filtros activos del sidebar al momento de descargar.'),
+            ('Prevalencia', 'Casos ÷ evaluados con diagnóstico registrado en ese indicador × 100.'),
+            ('Moderada / Severa', 'Severa = el diagnóstico de KoBo contiene "severa/severo". Moderada = resto de casos. "Riesgo de..." no cuenta como caso.'),
+            ('Aguda (P/T)', 'Diagnóstico peso para la talla: desnutrición aguda / emaciación.'),
+            ('Crónica (T/E)', 'Diagnóstico talla para la edad: talla baja / desnutrición crónica.'),
+            ('Global (P/E)', 'Diagnóstico peso para la edad: desnutrición global / bajo peso.'),
+            ('Edad', 'Calculada desde fecha de nacimiento a la fecha de la entrevista. "Revisar edad" = sin fecha válida o ≥60 meses.'),
+            ('Mujeres', 'Embarazadas y lactantes deduplicadas por nombre + perfil. Clasificación del diagnóstico de KoBo; si no existe, por IMC.'),
+            ('Generado', _dt_tm.now().strftime('%Y-%m-%d %H:%M')),
+        ], columns=['Concepto', 'Definición'])
+
+        _hojas_tm = {
+            'Niños - Resumen municipio': tabla_ninos_res,
+            'Niños - Edad y sexo':       tabla_ninos_det,
+            'Mujeres emb. y lact.':      tabla_mujeres,
+            'Notas':                     _notas_tm,
+        }
+        _buf_tm = io.BytesIO()
+        with pd.ExcelWriter(_buf_tm, engine='openpyxl') as _w:
+            for _nom, _tab in _hojas_tm.items():
+                if _tab.empty:
+                    continue
+                _tab_x = _tab.copy()
+                for _c in _tab_x.columns:
+                    if isinstance(_tab_x[_c].dtype, pd.CategoricalDtype):
+                        _tab_x[_c] = _tab_x[_c].astype(str)
+                _tab_x.to_excel(_w, sheet_name=_nom[:31], index=False)
+                _ws = _w.sheets[_nom[:31]]
+                for _cell in _ws[1]:
+                    _cell.font = Font(bold=True, color='FFFFFFFF')
+                    _cell.fill = PatternFill('solid', fgColor='FF1F4E79')
+                    _cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                for _row in _ws.iter_rows(min_row=2):
+                    if str(_row[0].value) == 'TOTAL':
+                        for _cell in _row:
+                            _cell.font = Font(bold=True)
+                            _cell.fill = PatternFill('solid', fgColor='FFD9E1F2')
+                for _i, _col in enumerate(_tab_x.columns, 1):
+                    _ancho = max(len(str(_col)), _tab_x[_col].astype(str).str.len().max() if len(_tab_x) else 0)
+                    _ws.column_dimensions[get_column_letter(_i)].width = min(max(_ancho + 2, 10), 60)
+                _ws.freeze_panes = 'B2'
+        _buf_tm.seek(0)
+        st.download_button(
+            "⬇️ Descargar tablas por municipio (.xlsx)",
+            _buf_tm,
+            f"Tablas_nutricionales_municipio_{_dt_tm.now().strftime('%Y%m%d')}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB: REPORTE UNICEF
 # ═══════════════════════════════════════════════════════════════════════════════
