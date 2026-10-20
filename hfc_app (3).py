@@ -1,0 +1,4136 @@
+"""
+High Frequency Check — Línea de Base UNICEF US / FUSAL
+Corre con: streamlit run hfc_app.py
+Todos los archivos auxiliares deben estar en la misma carpeta:
+  correcciones_geograficas.csv | distritos.csv | cantones.csv | unidadesdesalud.csv
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import io, os, pathlib
+from datetime import date, timedelta
+import plotly.graph_objects as go
+
+# ─────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────
+st.set_page_config(page_title="HFC · UNICEF US / FUSAL", page_icon="🔍", layout="wide")
+
+META_TAMIZAJE  = 4_000
+META_NINOS     = 3_500   # niños menores de 5 años
+META_MATERNAS  = 500     # embarazadas + madres lactantes (combinadas)
+META_REFERIDOS = 120
+META_DESNUT    = 120
+
+# Fechas límite por contacto
+FECHA_C1      = date(2026,  7, 30)   # C1: tamizaje en campo
+FECHA_C2      = date(2026,  9, 15)   # C2: charla presencial en comunidades
+FECHA_C3      = date(2026, 10, 21)   # C3: retamizaje en campo
+FECHA_LIMITE  = date(2026, 11,  1)   # cierre general del proyecto
+
+# Perfiles que cuentan como "maternas" tamizadas
+PERFILES_EMBARAZADA = ['Mujer embarazada',
+                       'Madre de niño/a menor a 5 años y mujer embarazada']
+PERFILES_LACTANTE   = ['Madre lactante']
+PERFILES_MATERNAS   = PERFILES_EMBARAZADA + PERFILES_LACTANTE
+
+# Estructura de equipos de campo (actualizada julio 2026)
+# Nota: Todo el Equipo Occidente opera en Ahuachapán Centro en la práctica.
+# La zona Santa Ana Centro está en el plan operativo pero no tiene registros.
+EQUIPOS = [
+    # (Región, Equipo, Zona asignada, Nombre normalizado, Rol)
+    # ── Equipo Oriente ─────────────────────────────────────────────────────
+    ("Oriente",      "Equipo Oriente 1 San Miguel", "San Miguel Centro",   "Arely Granados",    "Técnica Nutrición"),
+    ("Oriente",      "Equipo Oriente 1 San Miguel", "San Miguel Centro",   "Dolores",           "Promotora"),
+    ("Oriente",      "Equipo Oriente 2 Usulután",   "Usulután Este",       "Fátima Gómez",      "Promotora"),
+    ("Oriente",      "Equipo Oriente 2 Usulután",   "Usulután Este",       "Helen Romero",      "Técnica Nutrición"),
+    ("Oriente",      "Equipo Oriente 3 Moncagua",   "San Miguel Centro",   "Yulissa Hernández", "Promotora"),
+    ("Oriente",      "Equipo Oriente 3 Moncagua",   "San Miguel Centro",   "Maryori Hernández", "Técnica Nutrición"),
+    # ── Equipo Centro ──────────────────────────────────────────────────────
+    ("Centro",       "Equipo Centro SS",            "San Salvador Centro", "Brenda Nerio",      "Técnica Nutrición"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Centro", "Claudia",           "Promotora"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Gaby Pino",         "Técnica Nutrición"),
+    ("Centro",       "Equipo Centro SS",            "San Salvador Este",   "Rosibel Henríquez", "Promotora"),
+    # ── Equipo Occidente ───────────────────────────────────────────────────
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Damaris González",  "Técnica Nutrición"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Norma Rivera",      "Promotora"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Rosibel Arriola",   "Promotora"),
+    ("Occidente",    "Equipo Occidente",            "Ahuachapán Centro",   "Yeldi Pérez",       "Técnica Nutrición"),
+    # ── Equipo Santa Ana ──────────────────────────────────────────────────
+    ("Occidente",    "Equipo Santa Ana",            "Santa Ana Centro",    "Mauricio Paniagua", "Encuestador/a"),
+    ("Occidente",    "Equipo Santa Ana",            "Santa Ana Centro",    "Francisco Arévalo", "Encuestador/a"),
+    # ── Coordinación (excluida de métricas) ────────────────────────────────
+    # Tatiana Garay — Coordinadora zona SM
+    # Trinidad Granados — Coordinadora (su 1 registro se reasigna vía alias)
+]
+DF_EQUIPOS = pd.DataFrame(EQUIPOS, columns=['Región','Equipo','Zona','Nombre','Rol'])
+
+# Tabla de aliases de encuestadoras — nivel módulo para que sea accesible en exportación
+# IMPORTANTE: Rosibel Arriola y Rosibel Henríquez son personas DISTINTAS.
+ENC_ALIASES = {
+    # ── Variantes históricas ───────────────────────────────────────────
+    'Brenda Nerios':                      'Brenda Nerio',
+    'Fatima Gomez':                       'Fátima Gómez',
+    'Trinidad Granados':                  'Gaby Pino',      # Coord. → SS Este
+    # ── Nombres completos KoBo (versión jul 2026) ─────────────────────
+    'Brenda Lisseth Nerio Ramírez':       'Brenda Nerio',
+    'Briseyda Maryori Hernández Argueta': 'Maryori Hernández',
+    'Claudia Patricia Mendez Guardado':   'Claudia',
+    'Dámaris Gabriela González López':    'Damaris González',
+    'Damaris Gabriela González López':    'Damaris González',
+    'Dolores Victoria Alfaro Ochoa':      'Dolores',
+    'Fatima Arely Granados de Reyes':     'Arely Granados',
+    'Fátima Arely Granados de Reyes':     'Arely Granados',
+    'Fátima María Gómez de García':       'Fátima Gómez',
+    'Gabriela Pino Ventura':              'Gaby Pino',
+    'Geraldina Rocibel Arriola Natividad':'Rosibel Arriola',
+    'Helenn Virginia Romero Martínez':    'Helen Romero',
+    'Helen Virginia Romero Martínez':     'Helen Romero',
+    'Meyvin Yulissa Hernandez de Segovia':'Yulissa Hernández',
+    'Meyvin Yulissa Hernández de Segovia':'Yulissa Hernández',
+    'Norma Cecibeth Rivera de Arévalo':   'Norma Rivera',
+    'Rosibel Arely Henríquez Vasquez':    'Rosibel Henríquez',
+    'Yeldi Zeneida Marcelino Pérez':      'Yeldi Pérez',
+    'Yeldi Marcelino':                    'Yeldi Pérez',
+    # ── Equipo Santa Ana (agregado ago 2026) ──────────────────────────────
+    'Francisco Arevalo':                  'Francisco Arévalo',
+    'Mauricio Paniagua ':                 'Mauricio Paniagua',   # variante con espacio
+}
+
+# Meta por zona (columna "Propuesta" del plan operativo)
+METAS_ZONA = {
+    "San Miguel Centro":   400,
+    "Ahuachapán Centro":   800,
+    "Santa Ana Centro":    400,   # Equipo Santa Ana (Mauricio Paniagua, Francisco Arévalo)
+    "San Salvador Este":   800,
+    "San Salvador Centro": 800,
+    "Usulután Este":       800,
+}
+
+st.markdown("""
+<style>
+.flag-high   {background:#fee2e2;border-left:4px solid #ef4444;padding:6px 10px;border-radius:4px;margin:2px 0;font-size:13px;}
+.flag-medium {background:#fef3c7;border-left:4px solid #f59e0b;padding:6px 10px;border-radius:4px;margin:2px 0;font-size:13px;}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# RESOLUCIÓN DE RUTAS (funciona local Y en Streamlit Cloud)
+# ─────────────────────────────────────────────
+def _resolve(fname):
+    """Busca un archivo junto al script, luego en el directorio de trabajo."""
+    candidatos = [
+        pathlib.Path(__file__).parent / fname,   # junto al .py (local)
+        pathlib.Path.cwd() / fname,              # cwd (Streamlit Cloud = raíz del repo)
+    ]
+    for p in candidatos:
+        if p.exists():
+            return str(p)
+    return None
+
+
+# ─────────────────────────────────────────────
+# CATÁLOGOS GEOGRÁFICOS
+# ─────────────────────────────────────────────
+@st.cache_data
+def cargar_catalogos():
+    def _load(fname, sep=';'):
+        p = _resolve(fname)
+        return pd.read_csv(p, sep=sep) if p else pd.DataFrame()
+
+    distritos = _load('distritos.csv')
+    cantones  = _load('cantones.csv')
+    unidades  = _load('unidadesdesalud.csv')
+
+    dist_map = distritos.set_index('adm3_pcode')['adm3_name'].to_dict() if not distritos.empty else {}
+    cant_map = cantones.set_index('adm4_pcode')['adm4_name'].to_dict()  if not cantones.empty  else {}
+    us_map   = unidades.set_index('u_code')['u_name'].to_dict()         if not unidades.empty   else {}
+    return dist_map, cant_map, us_map
+
+
+@st.cache_data
+def cargar_correcciones():
+    p = _resolve('correcciones_geograficas.csv')
+    return pd.read_csv(p, dtype={'_id': int}) if p else pd.DataFrame()
+
+
+# ─────────────────────────────────────────────
+# CARGA Y LIMPIEZA
+# ─────────────────────────────────────────────
+@st.cache_data
+def cargar_raw(archivo, mod_time=None):
+    # mod_time se usa como clave de caché: cuando el archivo cambia en el repo,
+    # su fecha de modificación cambia y Streamlit recarga los datos automáticamente.
+    xl = pd.ExcelFile(archivo)
+    main  = pd.read_excel(xl, sheet_name=0)
+    ninos = pd.read_excel(xl, sheet_name='group_sr9jz33')       if 'group_sr9jz33'       in xl.sheet_names else pd.DataFrame()
+    sec3  = pd.read_excel(xl, sheet_name='sec3_salud_nutricion') if 'sec3_salud_nutricion' in xl.sheet_names else pd.DataFrame()
+    adic  = pd.read_excel(xl, sheet_name='ninos_adicionales')    if 'ninos_adicionales'    in xl.sheet_names else pd.DataFrame()
+    # Normalizar columnas de ninos_adicionales para que sean compatibles con las otras hojas
+    if not adic.empty:
+        adic = adic.rename(columns={
+            'Nombre del niño/a':             '¿Cuál es el nombre del niño/a?',
+            'Fecha de nacimiento':           'Fecha de nacimiento del niño a evaluar',
+            '¿Cuál es el estado nutricional?': '¿Cuál es el diagnóstico nutricional del peso y la talla?',
+        })
+    return main, ninos, sec3, adic
+
+
+def unificar(df, dist_map, cant_map, us_map):
+    pares = {
+        'nombre':     ('Nombre de la persona entrevistada',                    'Nombre de la persona entrevistada.1'),
+        'fecha_ent':  ('Fecha de la entrevista',                               'Fecha de la entrevista.1'),
+        'encuestador':('Encuestador',                                          'Encuestador.1'),
+        'sexo':       ('Sexo',                                                 'Sexo.1'),
+        'perfil':     ('Perfil de la persona entrevistada',                    'Perfil de la persona entrevistada.1'),
+        'unidad_cod': ('Unidad de Salud a la que pertenece/asiste su familia', 'Unidad de Salud a la que pertenece/asiste su familia.1'),
+        'telefono':   ('Número de teléfono',                                   'Número de teléfono.1'),
+        'sabe_leer':  ('¿Sabe leer y escribir?',                               '¿Sabe leer y escribir?.1'),
+        'peso':       ('Peso (kg)',                                             'Peso (kg)'),
+        'talla':      ('Talla (mts)',                                          'Talla (mts)'),
+        'imc':        ('imc_embarazada',                                       'IMC'),
+        'eg_sem':     ('Edad gestacional: Semanas',                            'Edad gestacional: Semanas.1'),
+        'referencia': ('¿Se brindó referencia?',                               '¿Se brindó referencia?.1'),
+        'consejeria': ('¿Se le brindó consejería?',                            '¿Se le brindó consejería?.1'),
+    }
+    for col_new, (c1, c2) in pares.items():
+        s1 = df[c1] if c1 in df.columns else pd.Series(dtype='object', index=df.index)
+        s2 = df[c2] if c2 in df.columns else pd.Series(dtype='object', index=df.index)
+        df[col_new] = s1.fillna(s2)
+
+    df['nombre']      = df['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
+    df['encuestador'] = df['encuestador'].astype(str).str.strip().replace('nan', pd.NA)
+
+    # Normalización de encuestadoras usando tabla global ENC_ALIASES
+    df['encuestador'] = df['encuestador'].replace(ENC_ALIASES)
+
+    df['start']     = pd.to_datetime(df['start'],    errors='coerce')
+    df['end']       = pd.to_datetime(df['end'],      errors='coerce')
+    df['fecha_ent'] = pd.to_datetime(df['fecha_ent'],errors='coerce')
+    # Usar fecha_ent (fecha real de entrevista) como base; fallback a start si nula
+    _fecha_base     = df['fecha_ent'].fillna(df['start'])
+    df['fecha_dia'] = _fecha_base.dt.date
+    df['semana']    = _fecha_base.dt.to_period('W').apply(lambda p: p.start_time.date() if pd.notna(p) else None)
+    df['mes']       = _fecha_base.dt.to_period('M').astype(str)
+    df['duracion_min'] = (df['end'] - df['start']).dt.total_seconds() / 60
+
+    df['talla'] = pd.to_numeric(df['talla'], errors='coerce')
+    df.loc[df['talla'] > 3, 'talla'] /= 100
+    for c in ['peso', 'imc', 'eg_sem']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    # Decodificar geografía (con búsqueda flexible de columnas)
+    _col_distrito = next((c for c in ['Distrito', 'distrito'] if c in df.columns), None)
+    _col_canton   = next((c for c in ['Cantón', 'canton', 'Canton'] if c in df.columns), None)
+    _col_muni     = next((c for c in ['Municipio', 'municipio'] if c in df.columns), None)
+
+    df['distrito_cod'] = df[_col_distrito].astype(str).where(df[_col_distrito].notna()) if _col_distrito else pd.Series(dtype=str, index=df.index)
+    df['canton_cod']   = df[_col_canton].astype(str).where(df[_col_canton].notna()) if _col_canton else pd.Series(dtype=str, index=df.index)
+    
+    df['distrito_nombre'] = df['distrito_cod'].map(dist_map)
+    df['canton_nombre']   = df['canton_cod'].map(cant_map)
+    
+    df['unidad_cod_int']  = pd.to_numeric(df.get('unidad_cod'), errors='coerce')
+    df['unidad_nombre']   = df['unidad_cod_int'].map(us_map)
+
+    # Asegurar que Municipio sea texto
+    if _col_muni:
+        df['Municipio'] = df[_col_muni].astype(object)
+    else:
+        df['Municipio'] = pd.Series(dtype=object, index=df.index)
+
+    return df
+
+def aplicar_correcciones(df, corr):
+    if corr.empty:
+        return df, 0
+    df = df.copy()
+    for col in ['Municipio', 'distrito_nombre', 'canton_nombre', 'unidad_nombre']:
+        df[col] = df[col].astype(object)
+    n = 0
+    for _, row in corr.iterrows():
+        mask = df['_id'] == row['_id']
+        if mask.any():
+            df.loc[mask, 'Municipio']       = row['municipio_correcto']
+            df.loc[mask, 'distrito_nombre'] = row['distrito_correcto']
+            df.loc[mask, 'canton_nombre']   = row['canton_correcto']
+            df.loc[mask, 'unidad_nombre']   = row['unidad_salud_correcta']
+            n += int(mask.sum())
+    return df, n
+
+
+def construir_ninos(df_ninos, df_sec3, df_main, df_adic=None):
+    ref_cols = ['_id', 'fecha_dia', 'semana', 'mes', 'encuestador', 'Municipio',
+                'distrito_nombre', 'canton_nombre', 'nombre', 'telefono', 'unidad_nombre',
+                '_uuid', '_submission_time', '__version__']
+    ref = df_main[[c for c in ref_cols if c in df_main.columns]].copy()
+
+    frames = []
+    # Niños adicionales EXCLUIDOS de los cálculos del dashboard — solo van al export
+    sheets_to_process = [(df_ninos, '_submission__id'), (df_sec3, '_submission__id')]
+    for sheet, id_col in sheets_to_process:
+        if sheet.empty:
+            continue
+        s = sheet.copy()
+        # Edad unificada
+        if 'Edad' in s.columns:
+            s['edad_txt'] = s['Edad']
+        elif 'edad_nino' in s.columns:
+            s['edad_txt'] = s['edad_nino']
+        else:
+            s['edad_txt'] = pd.NA
+
+        # Conservar TODAS las columnas del KoBo (no filtrar) + renombrar ID
+        if id_col in s.columns:
+            s = s.rename(columns={id_col: '_submission_id'})
+        frames.append(s)
+
+    if not frames:
+        return pd.DataFrame()
+
+    ninos = pd.concat(frames, ignore_index=True)
+
+    # Eliminar columnas duplicadas si el concat produjo alguna (mantener primera ocurrencia)
+    if ninos.columns.duplicated().any():
+        ninos = ninos.loc[:, ~ninos.columns.duplicated(keep='first')]
+
+    # Solo incluir columnas de ref que NO estén ya en ninos (evita _x/_y duplicados)
+    _ref_cols_to_add = [c for c in ref.columns if c not in ninos.columns or c == '_id']
+    _ref_slim = ref[[c for c in _ref_cols_to_add if c in ref.columns]].copy()
+    ninos = ninos.merge(_ref_slim, left_on='_submission_id', right_on='_id', how='left')
+
+    # Limpiar duplicados de columna que pudieron surgir del merge
+    if ninos.columns.duplicated().any():
+        ninos = ninos.loc[:, ~ninos.columns.duplicated(keep='first')]
+    ninos['peso_nino']  = pd.to_numeric(ninos.get('¿Cuál es el peso en Kg del niño/a?'),  errors='coerce')
+    ninos['talla_nino'] = pd.to_numeric(ninos.get('¿Cuál es la talla en cm del niño/a?'), errors='coerce')
+    ninos['muac']       = pd.to_numeric(ninos.get('Medida del perímetro braquial en cm'),  errors='coerce')
+
+    # Corrección de fecha: 3 registros con fecha_dia 2026-05-18 son errores de dedo (mes 05→06).
+    # Confirmado por _submission_time (jun/jul 2026) y nombres: Iker/Lucia Palacios Fuentes, Liam Argueta Lovo.
+    if 'fecha_dia' in ninos.columns and '¿Cuál es el nombre del niño/a?' in ninos.columns:
+        _nombres_corr = ['Iker Gustavo Palacios Fuentes', 'Lucia Sophia Palacio Fuentes', 'Liam Jose Argueta Lovo']
+        _mask_fecha_corr = (
+            ninos['¿Cuál es el nombre del niño/a?'].isin(_nombres_corr) &
+            (pd.to_datetime(ninos['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d') == '2026-05-18')
+        )
+        # Solo corregir fecha_dia — semana y mes vienen del registro padre (ya son de jun/jul)
+        # Se asigna string; la normalización global a datetime ocurre después de construir_ninos()
+        ninos.loc[_mask_fecha_corr, 'fecha_dia'] = '2026-06-18'
+
+    # Corrección automática: talla ingresada sin punto decimal (ej: 915 en vez de 91.5 cm)
+    # Rango normal <5 años: 45–130 cm. Valores >200 son errores de entrada → dividir entre 10.
+    mask_talla_err = ninos['talla_nino'] > 200
+    ninos.loc[mask_talla_err, 'talla_nino'] = ninos.loc[mask_talla_err, 'talla_nino'] / 10
+    ninos['talla_corregida'] = mask_talla_err  # flag para mostrar en Flags HFC
+
+    # Deduplicar nivel 1: mismo submission + nombre + DOB
+    # (captura duplicados entre hojas group_sr9jz33 y sec3_salud_nutricion del mismo export)
+    _dedup_cols = [c for c in ['_submission_id', '¿Cuál es el nombre del niño/a?',
+                                'Fecha de nacimiento del niño a evaluar'] if c in ninos.columns]
+    if _dedup_cols:
+        ninos = ninos.drop_duplicates(subset=_dedup_cols, keep='first').reset_index(drop=True)
+
+    # Deduplicar nivel 2: mismo nombre + DOB + cantón + fecha_dia
+    # (captura dobles envíos en KoBo con _submission_id distinto pero mismo niño/a)
+    _dedup_cols2 = [c for c in ['¿Cuál es el nombre del niño/a?',
+                                 'Fecha de nacimiento del niño a evaluar',
+                                 'canton_nombre', 'fecha_dia'] if c in ninos.columns]
+    if len(_dedup_cols2) >= 2:
+        ninos = ninos.drop_duplicates(subset=_dedup_cols2, keep='first').reset_index(drop=True)
+
+    return ninos
+
+
+# ─────────────────────────────────────────────
+# CHECKS HFC
+# ─────────────────────────────────────────────
+def check_duplicados(df, ninos=None):
+    """
+    Detecta duplicados y los clasifica:
+    - 🔴 Duplicado probable: misma madre, misma fecha, mismo perfil, sin hijos distintos
+    - 🟡 Distinto hijo (no eliminar): misma madre, misma fecha, pero hijos distintos en repeat group
+    - ℹ️ Perfiles distintos: misma madre, misma fecha, pero perfiles diferentes → se cuenta por separado, solo aviso
+    """
+    mask = df.duplicated(subset=['nombre', 'fecha_ent'], keep=False) & df['nombre'].notna()
+    cols_base = ['_id','nombre','fecha_ent','fecha_dia','encuestador','Municipio','peso','talla','imc']
+    if 'perfil' in df.columns:
+        cols_base.append('perfil')
+    cands = df[mask][cols_base].copy()
+
+    if cands.empty:
+        return pd.DataFrame()
+
+    # Construir mapa: submission_id → set de nombres de hijos
+    hijos_por_id = {}
+    if ninos is not None and not ninos.empty and '_submission_id' in ninos.columns:
+        col_nombre_nino = '¿Cuál es el nombre del niño/a?'
+        if col_nombre_nino in ninos.columns:
+            for sid, grp in ninos.groupby('_submission_id'):
+                nombres = set(grp[col_nombre_nino].dropna().astype(str).str.strip().str.title())
+                hijos_por_id[sid] = nombres
+
+    # Para cada grupo (nombre + fecha), determinar si hay hijos distintos entre las filas
+    resultados = []
+    grupos = cands.groupby(['nombre', 'fecha_ent'])
+    for (nombre, fecha), grp in grupos:
+        ids_grupo = grp['_id'].tolist()
+        hijos_grupo = [hijos_por_id.get(i, set()) for i in ids_grupo]
+
+        # ── Perfiles distintos: no es duplicado, solo aviso ──
+        perfiles_grupo = grp['perfil'].dropna().unique().tolist() if 'perfil' in grp.columns else []
+        if len(set(perfiles_grupo)) > 1:
+            tipo    = 'ℹ️ Perfiles distintos (no eliminar)'
+            sev     = 'Baja'
+            detalle = f"Perfiles: {', '.join(sorted(set(str(p) for p in perfiles_grupo)))}"
+            # Hijos como info adicional
+            todos_hijos = [h for h in hijos_grupo if h]
+            if todos_hijos:
+                union_hijos = set().union(*todos_hijos)
+                detalle += f" · Hijos: {', '.join(sorted(union_hijos))}"
+            for _, row in grp.iterrows():
+                resultados.append({
+                    '_id': row['_id'], 'nombre': row['nombre'],
+                    'fecha_dia': row['fecha_dia'], 'encuestador': row['encuestador'],
+                    'Municipio': row['Municipio'], 'flag': tipo, 'detalle': detalle, 'severidad': sev,
+                })
+            continue
+
+        # ── Mismo perfil: revisar hijos ──
+        todos_hijos = [h for h in hijos_grupo if h]  # excluir sets vacíos
+
+        if len(todos_hijos) >= 2:
+            union_hijos = set().union(*todos_hijos)
+            intersecc   = todos_hijos[0].intersection(*todos_hijos[1:]) if len(todos_hijos) > 1 else todos_hijos[0]
+            hijos_distintos = union_hijos - intersecc
+
+            if hijos_distintos:
+                # Hijos distintos → no eliminar
+                tipo = '🟡 Distinto hijo (no eliminar)'
+                sev  = 'Media'
+                detalle = f"Hijos: {', '.join(sorted(union_hijos))}"
+            else:
+                tipo = '🔴 Duplicado probable'
+                sev  = 'Alta'
+                detalle = f"Hijos: {', '.join(sorted(union_hijos)) or 'ninguno registrado'}"
+        else:
+            tipo = '🔴 Duplicado probable (sin niños en repeat group)'
+            sev  = 'Alta'
+            detalle = 'Sin niños registrados'
+
+        # ¿Misma encuestadora?
+        encuestadoras = grp['encuestador'].dropna().unique()
+        if len(encuestadoras) > 1:
+            detalle += f" · Encuestadoras distintas: {', '.join(encuestadoras)}"
+
+        # ¿Variables clave idénticas? (peso + talla)
+        if 'peso' in grp.columns and grp['peso'].notna().all() and grp['peso'].nunique() == 1:
+            detalle += ' · Peso idéntico ⚠️'
+
+        for _, row in grp.iterrows():
+            resultados.append({
+                '_id':         row['_id'],
+                'nombre':      row['nombre'],
+                'fecha_dia':   row['fecha_dia'],
+                'encuestador': row['encuestador'],
+                'Municipio':   row['Municipio'],
+                'flag':        tipo,
+                'detalle':     detalle,
+                'severidad':   sev,
+            })
+
+    return pd.DataFrame(resultados) if resultados else pd.DataFrame()
+
+def check_desnutricion(ninos):
+    """
+    Detecta niños con diagnóstico de desnutrición o emaciación en cualquier indicador.
+    Equivalencia: emaciado / emaciado severo = desnutrición / desnutrición severa (término actualizado en Kobo).
+    """
+    if ninos.empty:
+        return pd.DataFrame()
+
+    # Términos que activan el flag (ambas versiones del formulario)
+    TERMINOS_ALERTA = [
+        'desnutrici', 'desnutricion', 'emaciado', 'emaciacion',
+        'aguda severa', 'aguda moderada', 'riesgo de desnutri'
+    ]
+    # Columnas de diagnóstico nutricional en niños
+    diag_cols = [c for c in ninos.columns if any(k in c.lower() for k in
+                 ['diagnóstico', 'diagnostico', 'diagnóst', 'diagnos', 'perímetro', 'perimetro'])]
+
+    rows = []
+    for _, row in ninos.iterrows():
+        for col in diag_cols:
+            val = str(row.get(col, '') or '').lower().strip()
+            if not val or val in ('nan', ''):
+                continue
+            if any(t in val for t in TERMINOS_ALERTA):
+                # Determinar severidad
+                if 'riesgo' in val:
+                    sev   = 'Media'
+                    icono = '🟡'
+                else:
+                    sev   = 'Alta'
+                    icono = '🔴'
+                nombre_nino = row.get('¿Cuál es el nombre del niño/a?', 'Sin nombre')
+                rows.append({
+                    '_id':         row.get('_submission_id', ''),
+                    'nombre':      f"{nombre_nino} (niño/a)",
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                    'flag':        f"{icono} Desnutrición detectada: {val.title()} ({col.split('?')[-1].strip() if '?' in col else col[:40]})",
+                    'severidad':   sev,
+                })
+                break  # un flag por niño es suficiente
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+def check_referencia_congruencia(df, ninos):
+    """
+    Dos tipos de incongruencia entre diagnóstico peso/talla y referencia:
+      🔴 Debería referirse  — diagnóstico crítico (emaciado/desnutrición) pero SIN referencia
+      🟡 Referencia dudosa  — SE hizo referencia pero diagnóstico peso/talla es normal
+    Se revisa tanto en niños (diag peso/talla) como en maternas (campo referencia).
+    """
+    # Términos que EXIGEN referencia
+    CRITICOS   = ['desnutrici','emaciado','emaciacion','aguda severa','aguda moderada']
+    # Términos que indican estado normal (no debería referirse por peso/talla)
+    NORMALES   = ['normal','adecuado','eutrófico','eutr','bien nutrido']
+    RIESGO     = ['riesgo']  # gris: referencia razonable, no flag
+
+    rows = []
+
+    # ── NIÑOS ────────────────────────────────────────────────────────────────
+    if not ninos.empty:
+        # Columna específica de diagnóstico peso/talla (la más relevante para referencia)
+        col_pt = next((c for c in ninos.columns if 'peso' in c.lower() and 'talla' in c.lower()
+                       and ('diagnós' in c.lower() or 'diagnos' in c.lower())), None)
+        # Fallback: cualquier columna de diagnóstico
+        if not col_pt:
+            col_pt = next((c for c in ninos.columns if 'diagnós' in c.lower() or 'diagnos' in c.lower()), None)
+
+        col_ref_n = '¿Se brindó referencia?' if '¿Se brindó referencia?' in ninos.columns else None
+
+        if col_pt and col_ref_n:
+            for _, row in ninos.iterrows():
+                diag    = str(row.get(col_pt, '') or '').lower().strip()
+                ref_val = str(row.get(col_ref_n, '') or '').lower().strip()
+                tiene_ref = 'sí' in ref_val or 'si' in ref_val
+                es_critico = any(t in diag for t in CRITICOS)
+                es_normal  = any(t in diag for t in NORMALES)
+                es_riesgo  = any(t in diag for t in RIESGO)
+                nombre_n   = row.get('¿Cuál es el nombre del niño/a?', 'Sin nombre')
+
+                base = {
+                    '_id':         row.get('_submission_id', ''),
+                    'nombre':      f"{nombre_n} (niño/a)",
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                }
+                if es_critico and not tiene_ref:
+                    rows.append({**base,
+                        'flag':      f"🔴 Sin referencia — diagnóstico crítico: {diag.title()}",
+                        'severidad': 'Alta',
+                    })
+                elif tiene_ref and es_normal and not es_riesgo and diag:
+                    rows.append({**base,
+                        'flag':      f"🟡 Referencia con diagnóstico normal: {diag.title()}",
+                        'severidad': 'Media',
+                    })
+
+    # ── MATERNAS ─────────────────────────────────────────────────────────────
+    # Para maternas: usamos IMC / estado nutricional si está disponible
+    if not df.empty:
+        col_ref_m = 'referencia' if 'referencia' in df.columns else None
+        # Columna de diagnóstico nutricional de la madre (IMC / estado)
+        col_diag_m = next((c for c in df.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()
+                           or 'imc' == c.lower()), None)
+
+        if col_ref_m and col_diag_m:
+            for _, row in df.iterrows():
+                diag    = str(row.get(col_diag_m, '') or '').lower().strip()
+                ref_val = str(row.get(col_ref_m, '') or '').lower().strip()
+                tiene_ref  = 'sí' in ref_val or 'si' in ref_val
+                es_critico = any(t in diag for t in CRITICOS)
+                es_normal  = any(t in diag for t in NORMALES)
+                es_riesgo  = any(t in diag for t in RIESGO)
+
+                base = {
+                    '_id':         row.get('_id', ''),
+                    'nombre':      row.get('nombre', 'Sin nombre'),
+                    'fecha_dia':   row.get('fecha_dia', ''),
+                    'encuestador': row.get('encuestador', ''),
+                    'Municipio':   row.get('Municipio', ''),
+                }
+                if es_critico and not tiene_ref and diag:
+                    rows.append({**base,
+                        'flag':      f"🔴 Sin referencia — diagnóstico crítico: {diag.title()}",
+                        'severidad': 'Alta',
+                    })
+                elif tiene_ref and es_normal and not es_riesgo and diag:
+                    rows.append({**base,
+                        'flag':      f"🟡 Referencia con diagnóstico normal: {diag.title()}",
+                        'severidad': 'Media',
+                    })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def check_duracion(df):
+    rows = []
+    dur = df['duracion_min']
+    for cond, fn, sev in [
+        (dur < 5,             lambda x: f'🔴 Muy corta ({x:.1f} min)',            'Alta'),
+        ((dur>90)&(dur<1000), lambda x: f'🟡 Larga ({x:.1f} min > 90)',           'Media'),
+        (dur >= 1000,         lambda x: f'🟡 Subido con retraso ({x/60:.0f}h — sin internet en campo)', 'Media'),
+    ]:
+        sub = df[cond][['_id','nombre','fecha_dia','encuestador','Municipio','duracion_min']].copy()
+        if not sub.empty:
+            sub['flag'] = sub['duracion_min'].apply(fn)
+            sub['severidad'] = sev
+            rows.append(sub)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+def check_outliers(df):
+    rows = []
+    rangos = {
+        'peso':   (30, 120,  'Peso fuera de rango ({:.1f} kg)'),
+        'talla':  (1.3, 2.0, 'Talla fuera de rango ({:.2f} m)'),
+        'imc':    (10, 50,   'IMC fuera de rango ({:.1f})'),
+        'eg_sem': (4, 44,    'Semanas gestación fuera de rango ({:.0f})'),
+    }
+    for col, (lo, hi, tmpl) in rangos.items():
+        if col not in df.columns: continue
+        mask = df[col].notna() & ((df[col]<lo)|(df[col]>hi))
+        if mask.any():
+            sub = df[mask][['_id','nombre','fecha_dia','encuestador','Municipio',col]].copy()
+            sub['flag'] = sub[col].apply(lambda x: f'🟡 {tmpl.format(x)}')
+            sub['severidad'] = 'Media'
+            rows.append(sub.drop(columns=[col]))
+    if 'imc' in df.columns:
+        mask0 = df['imc'] == 0
+        if mask0.any():
+            sub = df[mask0][['_id','nombre','fecha_dia','encuestador','Municipio']].copy()
+            sub['flag'] = '🔴 IMC = 0 (error de captura)'; sub['severidad'] = 'Alta'
+            rows.append(sub)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+def check_nulos(df):
+    rows = []
+    for col, lbl in [('nombre','Nombre vacío'),('encuestador','Encuestador vacío'),
+                     ('Municipio','Municipio vacío'),('perfil','Perfil vacío')]:
+        if col not in df.columns: continue
+        mask = df[col].isna() | (df[col].astype(str).str.strip() == '')
+        if mask.any():
+            sub = df[mask][['_id','nombre','fecha_dia','encuestador','Municipio']].copy()
+            sub['flag'] = f'🟡 {lbl}'; sub['severidad'] = 'Media'
+            rows.append(sub)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+def check_geo(df):
+    mask = df['distrito_nombre'].isna() | df['canton_nombre'].isna()
+    sub = df[mask][['_id','nombre','fecha_dia','encuestador','Municipio']].copy()
+    if not sub.empty:
+        sub['flag'] = '🟡 Distrito o cantón sin decodificar'; sub['severidad'] = 'Media'
+    return sub if not sub.empty else pd.DataFrame()
+
+def stats_enc(df):
+    g = df.groupby('encuestador', dropna=True)
+    s = pd.DataFrame({
+        'Encuestas':          g.size(),
+        'Días campo':         g['fecha_dia'].nunique(),
+        'Dur. mediana (min)': g['duracion_min'].median().round(1),
+        '% < 5 min':          g['duracion_min'].apply(lambda x: (x<5).mean()*100).round(1),
+        '% > 90 min':         g['duracion_min'].apply(lambda x: (x>90).mean()*100).round(1),
+        'Enc./día':           (g.size() / g['fecha_dia'].nunique()).round(1),
+    }).reset_index()
+    s.columns = ['Encuestador/a','Encuestas','Días campo','Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día']
+    return s.sort_values('Encuestas', ascending=False)
+
+
+# ─────────────────────────────────────────────
+# PROYECCIÓN — modelo de 3 contactos con fechas fijas
+# ─────────────────────────────────────────────
+def _dias_habiles_entre(inicio: date, fin: date, dias_sem: int) -> int:
+    """Días de campo disponibles entre dos fechas, dado días/semana de trabajo."""
+    total_cal = max((fin - inicio).days, 0)
+    semanas   = total_cal / 7
+    return int(semanas * dias_sem)
+
+def calcular_proyeccion(actual, meta, tasa_dia, dias_sem, n_equipos):
+    """
+    Proyecta si el equipo puede completar los 3 contactos dentro de las fechas límite.
+
+    C1 (tamizaje campo):          hoy → FECHA_C1  (30 jul)
+    C2 (charla presencial):  FECHA_C1 → FECHA_C2  (15 sep)
+    C3 (retamizaje campo):   FECHA_C2 → FECHA_C3  (21 oct)
+    """
+    hoy           = date.today()
+    cap_dia_total = tasa_dia * n_equipos
+    cap_sem       = cap_dia_total * dias_sem
+
+    if cap_dia_total <= 0 or dias_sem <= 0:
+        return {
+            'cap_dia': 0, 'cap_sem': 0,
+            'fecha_fin_c1': None, 'fecha_fin_c2': None, 'fecha_fin_c3': None,
+            'cap_c1': 0, 'cap_c2': 0, 'cap_c3': 0,
+            'cumple_c1': False, 'cumple_c2': False, 'cumple_c3': False, 'cumple': False,
+        }
+
+    # ── C1: tamizajes restantes dentro de la ventana hoy→FECHA_C1 ──
+    restante_c1    = max(meta - actual, 0)
+    dias_c1        = _dias_habiles_entre(hoy, FECHA_C1, dias_sem)
+    cap_c1         = cap_dia_total * dias_c1          # capacidad total en ventana C1
+    cumple_c1      = cap_c1 >= restante_c1
+    # fecha proyectada en que termina C1 (si hay capacidad)
+    if cap_dia_total > 0:
+        dias_campo_c1  = restante_c1 / cap_dia_total
+        dias_cal_c1    = int((dias_campo_c1 / dias_sem) * 7) if dias_sem > 0 else 0
+        fecha_fin_c1   = hoy + timedelta(days=dias_cal_c1) if dias_cal_c1 < 3650 else None
+    else:
+        fecha_fin_c1   = None
+
+    # ── C2: charla presencial — mismas 4,000 personas, ventana C1→C2 ──
+    dias_c2   = _dias_habiles_entre(FECHA_C1, FECHA_C2, dias_sem)
+    cap_c2    = cap_dia_total * dias_c2
+    cumple_c2 = cap_c2 >= meta
+    dias_cal_c2   = int((meta / cap_dia_total / dias_sem) * 7) if cap_dia_total > 0 else 0
+    fecha_fin_c2  = FECHA_C1 + timedelta(days=dias_cal_c2) if dias_cal_c2 < 3650 else None
+
+    # ── C3: retamizaje — mismas 4,000 personas, ventana C2→C3 ──
+    dias_c3   = _dias_habiles_entre(FECHA_C2, FECHA_C3, dias_sem)
+    cap_c3    = cap_dia_total * dias_c3
+    cumple_c3 = cap_c3 >= meta
+    dias_cal_c3   = int((meta / cap_dia_total / dias_sem) * 7) if cap_dia_total > 0 else 0
+    fecha_fin_c3  = FECHA_C2 + timedelta(days=dias_cal_c3) if dias_cal_c3 < 3650 else None
+
+    cumple = cumple_c1 and cumple_c2 and cumple_c3
+
+    return {
+        'cap_dia':      int(cap_dia_total),
+        'cap_sem':      int(cap_sem),
+        'fecha_fin_c1': fecha_fin_c1,
+        'fecha_fin_c2': fecha_fin_c2,
+        'fecha_fin_c3': fecha_fin_c3,
+        'cap_c1':       int(cap_c1),
+        'cap_c2':       int(cap_c2),
+        'cap_c3':       int(cap_c3),
+        'cumple_c1':    cumple_c1,
+        'cumple_c2':    cumple_c2,
+        'cumple_c3':    cumple_c3,
+        'cumple':       cumple,
+    }
+
+
+# ─────────────────────────────────────────────
+# INTERFAZ PRINCIPAL
+# ─────────────────────────────────────────────
+st.title("🔍 HFC · Línea de Base UNICEF US / FUSAL")
+st.caption("El Salvador · Meta: 4,000 personas tamizadas · Cierre: 15 noviembre 2026")
+
+dist_map, cant_map, us_map = cargar_catalogos()
+correcciones = cargar_correcciones()
+
+ADMIN_PIN = "fusal2026"   # ← cambia esto cuando quieras
+
+# ── SIDEBAR ──
+with st.sidebar:
+    st.header("📂 Datos")
+
+    n_corr_total = len(correcciones)
+    if n_corr_total:
+        st.success(f"✅ {n_corr_total} correcciones geo cargadas")
+    else:
+        st.warning("⚠️ Sin correcciones_geograficas.csv")
+
+    # ── Modo 1: datos publicados (visibles para todos) ──
+    archivo_repo = _resolve('datos_actuales.xlsx')
+    archivo = None
+
+    if archivo_repo:
+        st.success("📊 Datos publicados cargados")
+        import datetime
+        mtime_repo = pathlib.Path(archivo_repo).stat().st_mtime
+        fecha_mod  = datetime.datetime.fromtimestamp(mtime_repo).strftime('%d/%m/%Y %H:%M')
+        st.caption(f"Última actualización: {fecha_mod}")
+        if st.button("🔄 Recargar datos del repo"):
+            st.cache_data.clear()
+            st.rerun()
+        archivo = archivo_repo   # se pasa como ruta string, se maneja abajo
+
+    else:
+        st.info("No hay datos publicados aún.\nSube `datos_actuales.xlsx` al repo de GitHub para que todos puedan ver los resultados.")
+
+    # ── Modo 2: admin — subir datos nuevos ──
+    st.markdown("---")
+    with st.expander("🔐 Actualizar datos (Admin)"):
+        pin = st.text_input("Clave de acceso", type="password", key="admin_pin")
+        if pin == ADMIN_PIN:
+            st.success("✅ Acceso admin")
+            archivo_admin = st.file_uploader("Sube export KoboToolbox (.xlsx)", type=['xlsx'], key="admin_upload")
+            if archivo_admin:
+                archivo = archivo_admin
+                st.success("Usando datos recién subidos (solo esta sesión)")
+                st.info(
+                    "Para que todos vean estos datos, súbelos a GitHub como `datos_actuales.xlsx` "
+                    "(Add file → Upload files → nombra el archivo exactamente así)."
+                )
+        elif pin:
+            st.error("Clave incorrecta")
+
+    if archivo:
+        # Pasar la fecha de modificación como clave de caché.
+        # Cuando subes un archivo nuevo al repo, su mtime cambia → caché se invalida → datos frescos.
+        if isinstance(archivo, str):
+            mod_time = pathlib.Path(archivo).stat().st_mtime
+        else:
+            mod_time = None   # archivo subido en sesión: Streamlit lo hashea por contenido
+
+        df_raw, df_ninos_raw, df_sec3_raw, df_adic_raw = cargar_raw(archivo, mod_time)
+        df = unificar(df_raw.copy(), dist_map, cant_map, us_map)
+        df, n_corr = aplicar_correcciones(df, correcciones)
+        ninos = construir_ninos(df_ninos_raw, df_sec3_raw, df, df_adic_raw)
+
+        # Normalizar fecha_dia a datetime en ambos dataframes para evitar
+        # errores de tipo mixto en groupby/merge con pandas 3.14 + Arrow backend
+        if 'fecha_dia' in df.columns:
+            df['fecha_dia'] = pd.to_datetime(df['fecha_dia'], errors='coerce')
+        if 'fecha_dia' in ninos.columns:
+            ninos['fecha_dia'] = pd.to_datetime(ninos['fecha_dia'], errors='coerce')
+
+        st.markdown("**Filtros**")
+        municipios = ['Todos'] + sorted(df['Municipio'].dropna().astype(str).unique().tolist())
+        sel_mun = st.selectbox("Municipio", municipios)
+
+        distritos_disp = ['Todos'] + sorted(df['distrito_nombre'].dropna().astype(str).unique().tolist())
+        sel_dist = st.selectbox("Distrito", distritos_disp)
+
+        cantones_disp = ['Todos'] + sorted(df['canton_nombre'].dropna().astype(str).unique().tolist())
+        sel_cant = st.selectbox("Cantón", cantones_disp)
+
+        encuestadores = ['Todos'] + sorted(df['encuestador'].dropna().astype(str).unique().tolist())
+        sel_enc = st.selectbox("Encuestador/a", encuestadores)
+
+        fechas = sorted(df['fecha_dia'].dropna().unique())
+        if fechas:
+            _f0 = pd.Timestamp(fechas[0]).date()
+            _f1 = pd.Timestamp(fechas[-1]).date()
+            rango = st.date_input("Rango fechas", value=(_f0, _f1),
+                                  min_value=_f0, max_value=_f1)
+
+        # Aplicar filtros
+        mask = pd.Series(True, index=df.index)
+        if sel_mun  != 'Todos': mask &= df['Municipio'].astype(str)        == sel_mun
+        if sel_dist != 'Todos': mask &= df['distrito_nombre'].astype(str)  == sel_dist
+        if sel_cant != 'Todos': mask &= df['canton_nombre'].astype(str)    == sel_cant
+        if sel_enc  != 'Todos': mask &= df['encuestador'].astype(str)      == sel_enc
+        if fechas and len(rango) == 2:
+            mask &= (df['fecha_dia'] >= pd.Timestamp(rango[0])) & (df['fecha_dia'] <= pd.Timestamp(rango[1]))
+        df_f = df[mask].copy()
+
+        if not ninos.empty:
+            n_mask = pd.Series(True, index=ninos.index)
+            if sel_mun  != 'Todos' and 'Municipio'       in ninos.columns: n_mask &= ninos['Municipio'].astype(str)       == sel_mun
+            if sel_dist != 'Todos' and 'distrito_nombre' in ninos.columns: n_mask &= ninos['distrito_nombre'].astype(str) == sel_dist
+            if sel_enc  != 'Todos' and 'encuestador'     in ninos.columns: n_mask &= ninos['encuestador'].astype(str)     == sel_enc
+            ninos_f = ninos[n_mask].copy()
+        else:
+            ninos_f = ninos.copy()
+
+        st.markdown("---")
+        st.metric("Entrevistas en vista", len(df_f))
+        st.metric("Niños en vista", len(ninos_f))
+        if n_corr:
+            st.caption(f"📍 {n_corr} registros corregidos geo")
+
+    st.markdown("---")
+    st.caption("Coloca todos los CSV auxiliares junto a hfc_app.py")
+
+
+if not archivo:
+    st.info("📭 No hay datos disponibles aún.")
+    st.markdown("""
+    **Para administradores:** sube `datos_actuales.xlsx` al repositorio de GitHub
+    para que todos los usuarios puedan ver los resultados automáticamente.
+
+    O usa la sección **🔐 Actualizar datos** en el sidebar para ver datos en tu sesión.
+    """)
+    with st.expander("Archivos necesarios en el repositorio"):
+        st.code("hfc_app.py\ndatos_actuales.xlsx\ncorrecciones_geograficas.csv\ndistritos.csv\ncantones.csv\nunidadesdesalud.csv")
+    st.stop()
+
+# Asignar vars filtradas
+df      = df_f
+ninos   = ninos_f
+
+# ── Niños estrictamente 0–59 meses (misma regla que el Excel "Cuadro resumen UNICEF") ──
+# Regla: edad_meses = (fecha_dia - fecha de nacimiento)/30.44; se cuentan solo 0–59 meses;
+# validation status vacío o "NA" (si la columna existe). Un niño con >=60 meses o sin
+# fecha de nacimiento válida NO cuenta como "menor de 5 años", aunque siga en los Flags HFC.
+def _construir_ninos_u5(_n):
+    if _n is None or _n.empty:
+        return _n.copy() if _n is not None else pd.DataFrame()
+    _u = _n.copy()
+    if 'edad_meses' not in _u.columns:
+        _dob = pd.to_datetime(_u.get('Fecha de nacimiento del niño a evaluar'), errors='coerce')
+        _fref = pd.to_datetime(_u.get('fecha_dia'), errors='coerce')
+        _u['edad_meses'] = (_fref - _dob).dt.days / 30.44
+    _u['edad_anios'] = (_u['edad_meses'] / 12).round(2)
+    _m = _u['edad_meses'].notna() & (_u['edad_meses'] < 60)
+    for _cv in ['_submission__validation_status', '_validation_status']:
+        if _cv in _u.columns:
+            _st = _u[_cv].fillna('').astype(str).str.strip().str.lower()
+            _m &= _st.isin(['', 'na', 'nan', 'none', '<na>'])
+            break
+    return _u[_m].copy()
+
+ninos_u5 = _construir_ninos_u5(ninos)
+
+# Checks
+f_dup  = check_duplicados(df, ninos)
+f_dur  = check_duracion(df)
+f_out  = check_outliers(df)
+f_nul  = check_nulos(df)
+f_geo  = check_geo(df)
+f_desn = check_desnutricion(ninos)
+f_ref  = check_referencia_congruencia(df, ninos)
+todos  = pd.concat([f for f in [f_dup,f_dur,f_out,f_nul,f_geo,f_desn,f_ref] if not f.empty], ignore_index=True)
+
+n_alta  = int((todos['severidad']=='Alta').sum())  if not todos.empty else 0
+n_media = int((todos['severidad']=='Media').sum()) if not todos.empty else 0
+
+# KPIs de avance
+total_ninos   = len(ninos_u5)   # estrictamente 0–59 meses (cuadra con el Excel)
+if 'perfil' in df.columns:
+    # Deduplicar por (nombre, perfil): si una mujer aparece con perfiles distintos
+    # (ej: embarazada en un registro, lactante en otro) se cuenta para cada perfil.
+    # Si aparece dos veces con el mismo perfil → solo se cuenta una vez.
+    df_madres_unicas = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre', 'perfil'])
+    n_embarazadas = int(df_madres_unicas['perfil'].isin(PERFILES_EMBARAZADA).sum())
+    n_lactantes   = int(df_madres_unicas['perfil'].isin(PERFILES_LACTANTE).sum())
+else:
+    n_embarazadas = 0
+    n_lactantes   = 0
+total_maternas  = n_embarazadas + n_lactantes
+total_tamizados = total_ninos + total_maternas
+pct_meta        = total_tamizados / META_TAMIZAJE * 100
+pct_ninos       = total_ninos    / META_NINOS    * 100
+pct_maternas    = total_maternas / META_MATERNAS * 100
+dias_restantes  = (FECHA_LIMITE - date.today()).days
+dias_campo      = df['fecha_dia'].nunique()
+tasa_actual     = total_tamizados / dias_campo if dias_campo > 0 else 0
+
+
+# ══════════════════════════════════════════════
+# TABS
+# ══════════════════════════════════════════════
+tab_avance, tab_escenarios, tab_indicadores, tab_flags, tab_ref_check, tab_dur, tab_dups, tab_out, tab_enc, tab_geo_tab, tab_export, tab_tablas_mun, tab_unicef = st.tabs([
+    "📊 Avance General",
+    "🎯 Proyección & Escenarios",
+    "🥗 Indicadores Nutricionales",
+    "🚦 Flags HFC",
+    "🚨 Referencias",
+    "⏱️ Duración",
+    "👥 Duplicados",
+    "📈 Outliers",
+    "👩‍💼 Por Encuestadora",
+    "📍 Geo / Correcciones",
+    "📥 Exportar",
+    "📑 Tablas por municipio",
+    "🇺🇳 Reporte UNICEF",
+])
+
+
+# ── TAB 1: AVANCE GENERAL ──────────────────────
+with tab_avance:
+    st.subheader("📊 Avance General del Proyecto")
+
+    # ── Fila 1: Total general ──
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🧑‍🤝‍🧑 Total tamizados (C1)", f"{total_tamizados:,}", help="Niños + embarazadas + lactantes")
+    c2.metric("Meta total", f"{META_TAMIZAJE:,}")
+    c3.metric("% avance total", f"{pct_meta:.1f}%")
+    c4.metric("Días restantes", dias_restantes, help=f"Al {FECHA_LIMITE.strftime('%d/%m/%Y')}")
+    st.progress(min(pct_meta / 100, 1.0))
+    st.caption(f"**{total_tamizados:,}** de **{META_TAMIZAJE:,}** — faltan **{META_TAMIZAJE - total_tamizados:,}**")
+
+    st.markdown("---")
+
+    # ── Fila 2: Desglose por tipo ──
+    st.markdown("**Desglose por tipo de persona tamizada**")
+    col_n, col_e, col_l, col_m = st.columns(4)
+
+    with col_n:
+        st.markdown(
+            f"<div style='background:#1e3a5f;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#90caf9;font-weight:600'>👶 Niños &lt;5 años</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{total_ninos:,}</div>"
+            f"<div style='font-size:12px;color:#90caf9'>Meta: {META_NINOS:,}</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_ninos>=50 else 'f59e0b'}'>{pct_ninos:.1f}%</div>"
+            f"<div style='background:#0d2137;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#3b82f6;width:{min(pct_ninos,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(META_NINOS-total_ninos,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_e:
+        pct_emb = n_embarazadas / (META_MATERNAS/2) * 100  # ~250 embarazadas
+        st.markdown(
+            f"<div style='background:#3b1f5e;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#c4b5fd;font-weight:600'>🤰 Embarazadas</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{n_embarazadas:,}</div>"
+            f"<div style='font-size:12px;color:#c4b5fd'>Meta estimada: ~250</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_emb>=50 else 'f59e0b'}'>{pct_emb:.1f}%</div>"
+            f"<div style='background:#1e0f3a;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#8b5cf6;width:{min(pct_emb,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(250-n_embarazadas,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_l:
+        pct_lac = n_lactantes / (META_MATERNAS/2) * 100  # ~250 lactantes
+        st.markdown(
+            f"<div style='background:#1f3b2e;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#6ee7b7;font-weight:600'>🤱 Madres lactantes</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{n_lactantes:,}</div>"
+            f"<div style='font-size:12px;color:#6ee7b7'>Meta estimada: ~250</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_lac>=50 else 'f59e0b'}'>{pct_lac:.1f}%</div>"
+            f"<div style='background:#0d2018;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#10b981;width:{min(pct_lac,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(250-n_lactantes,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    with col_m:
+        st.markdown(
+            f"<div style='background:#3b2a10;border-radius:10px;padding:14px 16px;text-align:center'>"
+            f"<div style='font-size:13px;color:#fcd34d;font-weight:600'>🌸 Maternas (total)</div>"
+            f"<div style='font-size:34px;font-weight:800;color:white'>{total_maternas:,}</div>"
+            f"<div style='font-size:12px;color:#fcd34d'>Meta: {META_MATERNAS:,}</div>"
+            f"<div style='font-size:18px;font-weight:700;color:#{'10b981' if pct_maternas>=50 else 'f59e0b'}'>{pct_maternas:.1f}%</div>"
+            f"<div style='background:#1f1505;border-radius:4px;height:8px;margin-top:6px'>"
+            f"<div style='background:#f59e0b;width:{min(pct_maternas,100):.0f}%;height:8px;border-radius:4px'></div></div>"
+            f"<div style='font-size:11px;color:#64748b;margin-top:4px'>Faltan {max(META_MATERNAS-total_maternas,0):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.metric("⚡ Ritmo actual", f"{tasa_actual:.1f} tamizajes/día de campo",
+              help=f"Promedio sobre {dias_campo} días de campo realizados")
+    st.markdown("---")
+
+    # Base combinada para gráficas: niños + maternas (misma lógica que totales)
+    _mat_graf = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                 .drop_duplicates(subset=['nombre','perfil'])
+                 if 'perfil' in df.columns else pd.DataFrame())
+
+    col_izq, col_der = st.columns(2)
+    with col_izq:
+        st.markdown("**Tamizados por semana** (niños + maternas)")
+        if not ninos.empty and 'semana' in ninos.columns:
+            _sem_n = ninos.groupby('semana').size().reset_index(name='Niños')
+            _sem_n['semana'] = _sem_n['semana'].astype(str)
+            if not _mat_graf.empty and 'semana' in _mat_graf.columns:
+                _sem_m = _mat_graf.groupby('semana').size().reset_index(name='Maternas')
+                _sem_m['semana'] = _sem_m['semana'].astype(str)
+                _sem = _sem_n.merge(_sem_m, on='semana', how='outer').fillna(0)
+            else:
+                _sem = _sem_n
+                _sem['Maternas'] = 0
+            _sem['Total'] = _sem['Niños'] + _sem['Maternas']
+            st.bar_chart(_sem.set_index('semana')[['Total']])
+        else:
+            st.info("Sin datos.")
+    with col_der:
+        st.markdown("**Tamizados por mes** (niños + maternas)")
+        if not ninos.empty and 'mes' in ninos.columns:
+            _mes_n = ninos.groupby('mes').size().reset_index(name='Niños')
+            _mes_n['mes'] = _mes_n['mes'].astype(str)
+            if not _mat_graf.empty and 'mes' in _mat_graf.columns:
+                _mes_m = _mat_graf.groupby('mes').size().reset_index(name='Maternas')
+                _mes_m['mes'] = _mes_m['mes'].astype(str)
+                _mes = _mes_n.merge(_mes_m, on='mes', how='outer').fillna(0)
+            else:
+                _mes = _mes_n
+                _mes['Maternas'] = 0
+            _mes['Total'] = _mes['Niños'] + _mes['Maternas']
+            st.bar_chart(_mes.set_index('mes')[['Total']])
+        else:
+            st.info("Sin datos.")
+
+    st.markdown("---")
+    # ── Avance por zona vs meta propuesta ──
+    st.markdown("**Avance por zona vs. meta propuesta**")
+    # Tamizados = niños + TODAS las maternas (misma lógica que tab Equipos)
+    mun_base = pd.DataFrame({
+        'Municipio': list(METAS_ZONA.keys()),
+        'Meta zona': list(METAS_ZONA.values()),
+    })
+    _nin_mun = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
+    if 'perfil' in df.columns and 'Municipio' in df.columns:
+        _mat_mun = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                    .drop_duplicates(subset=['nombre','perfil'])[['Municipio']].copy())
+    else:
+        _mat_mun = pd.DataFrame(columns=['Municipio'])
+    _tam_mun = pd.concat([_nin_mun, _mat_mun], ignore_index=True)
+    if not _tam_mun.empty:
+        mun_actual = _tam_mun.groupby('Municipio').size().reset_index(name='Tamizados')
+    else:
+        mun_actual = pd.DataFrame(columns=['Municipio','Tamizados'])
+
+    mun_n = mun_base.merge(mun_actual, on='Municipio', how='left')
+    mun_n['Tamizados'] = mun_n['Tamizados'].fillna(0).astype(int)
+    mun_n['Pendientes'] = (mun_n['Meta zona'] - mun_n['Tamizados']).clip(lower=0)
+    mun_n['% avance']   = (mun_n['Tamizados'] / mun_n['Meta zona'] * 100).round(1)
+    mun_n = mun_n.sort_values('Tamizados', ascending=False)
+    st.dataframe(mun_n[['Municipio','Meta zona','Tamizados','Pendientes','% avance']],
+                 use_container_width=True, hide_index=True)
+
+    # Gráfica: barras agrupadas Tamizados vs Meta (no apiladas)
+    _fig_zona = go.Figure()
+    _fig_zona.add_trace(go.Bar(
+        name='Tamizados', x=mun_n['Municipio'], y=mun_n['Tamizados'],
+        marker_color='#2ecc71', text=mun_n['Tamizados'], textposition='outside'
+    ))
+    _fig_zona.add_trace(go.Bar(
+        name='Meta', x=mun_n['Municipio'], y=mun_n['Meta zona'],
+        marker_color='#2c3e50', opacity=0.4,
+        text=mun_n['Meta zona'], textposition='outside'
+    ))
+    _fig_zona.update_layout(
+        barmode='group', bargap=0.25,
+        xaxis_title='', yaxis_title='Personas tamizadas',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(t=40, b=20)
+    )
+    st.plotly_chart(_fig_zona, use_container_width=True)
+
+    st.markdown("---")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Indicadores del proyecto**")
+        n_ref_maternas = int(df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if 'referencia' in df.columns else 0
+        n_ref_ninos    = int(ninos['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False).sum()) if (not ninos.empty and '¿Se brindó referencia?' in ninos.columns) else 0
+        n_ref = n_ref_maternas + n_ref_ninos
+        ind_df = pd.DataFrame({
+            'Indicador': [
+                'Total tamizados (C1)',
+                '— Niños <5 años',
+                '— Embarazadas',
+                '— Madres lactantes',
+                'Personas referidas',
+            ],
+            'Meta':   [4000, 3500, 250, 250, 120],
+            'Actual': [total_tamizados, total_ninos, n_embarazadas, n_lactantes, n_ref],
+        })
+        ind_df['Avance %'] = (ind_df['Actual'] / ind_df['Meta'] * 100).round(1)
+        st.dataframe(ind_df, use_container_width=True, hide_index=True)
+
+    with col_b:
+        st.markdown("**Zonas sin meta asignada en el plan**")
+        if not ninos.empty and 'Municipio' in ninos.columns:
+            zonas_conocidas = set(METAS_ZONA.keys())
+            zonas_data = set(ninos['Municipio'].dropna().unique())
+            sin_meta = zonas_data - zonas_conocidas
+            if sin_meta:
+                st.warning(f"Zonas en datos sin meta definida: {', '.join(sorted(sin_meta))}")
+            else:
+                st.success("✅ Todas las zonas tienen meta asignada.")
+
+    st.markdown("---")
+
+    # ── Tabla de personas referidas ──
+    st.markdown("**📋 Personas referidas**")
+
+    # Helper: busca columna de "unidad de referencia" (varios nombres posibles en el formulario)
+    def _get_unidad_ref(row, df_src):
+        for cand in ['¿A qué unidad de salud refiere?','Unidad de salud de referencia',
+                     'unidad_referencia','Unidad_referencia','Unidad de referencia']:
+            if cand in df_src.columns:
+                v = row.get(cand, '')
+                if pd.notna(v) and str(v).strip() not in ('','nan'):
+                    return str(v).strip()
+        return ''
+
+    # Maternas referidas
+    ref_rows = []
+    if 'referencia' in df.columns:
+        df_ref_mat = df[df['referencia'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
+        for _, row in df_ref_mat.iterrows():
+            ref_rows.append({
+                'Nombre':            row.get('nombre', ''),
+                'Mamá':              '',                          # N/A para maternas
+                'Tipo':              row.get('perfil', 'Materna'),
+                'Peso (kg)':         row.get('peso', ''),
+                'Talla (m)':         row.get('talla', ''),
+                'MUAC (cm)':         '',                          # MUAC no aplica a maternas
+                'Unidad referencia': _get_unidad_ref(row, df),
+                'Teléfono':          row.get('telefono', ''),
+                'Fecha':             row.get('fecha_dia', ''),
+                'Encuestadora':      row.get('encuestador', ''),
+                'Municipio':         row.get('Municipio', ''),
+                'Distrito':          row.get('distrito_nombre', ''),
+                'Cantón':            row.get('canton_nombre', ''),
+            })
+
+    # Niños referidos
+    if not ninos.empty and '¿Se brindó referencia?' in ninos.columns:
+        df_ref_nin = ninos[ninos['¿Se brindó referencia?'].astype(str).str.contains('Sí|Si', case=False, na=False)].copy()
+        nombre_nino_col = '¿Cuál es el nombre del niño/a?' if '¿Cuál es el nombre del niño/a?' in df_ref_nin.columns else None
+        for _, row in df_ref_nin.iterrows():
+            ref_rows.append({
+                'Nombre':            row[nombre_nino_col] if nombre_nino_col else '',
+                'Mamá':              row.get('nombre', ''),       # nombre de la entrevistada (mamá)
+                'Tipo':              'Niño/a',
+                'Peso (kg)':         row.get('peso_nino', ''),
+                'Talla (m)':         row.get('talla_nino', ''),
+                'MUAC (cm)':         row.get('muac', ''),
+                'Unidad referencia': _get_unidad_ref(row, ninos),
+                'Teléfono':          row.get('telefono', ''),     # teléfono de la mamá
+                'Fecha':             row.get('fecha_dia', ''),
+                'Encuestadora':      row.get('encuestador', ''),
+                'Municipio':         row.get('Municipio', ''),
+                'Distrito':          row.get('distrito_nombre', ''),
+                'Cantón':            row.get('canton_nombre', ''),
+            })
+
+    if not ref_rows:
+        st.info("Aún no hay personas referidas registradas.")
+    else:
+        df_ref_all = pd.DataFrame(ref_rows)
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Total referidas", len(df_ref_all))
+        col_r2.metric("Niños/as", int((df_ref_all['Tipo'] == 'Niño/a').sum()))
+        col_r3.metric("Maternas", int((df_ref_all['Tipo'] != 'Niño/a').sum()))
+
+        df_ref_all['Fecha'] = pd.to_datetime(df_ref_all['Fecha'], errors='coerce')
+
+        # Orden de columnas: info de contacto primero, luego medidas, luego ubicación
+        _col_order = ['Nombre','Mamá','Tipo','Teléfono','Peso (kg)','Talla (m)','MUAC (cm)',
+                      'Unidad referencia','Fecha','Encuestadora','Municipio','Distrito','Cantón']
+        df_ref_all = df_ref_all[[c for c in _col_order if c in df_ref_all.columns]]
+
+        st.dataframe(df_ref_all.sort_values('Fecha', ascending=False), use_container_width=True, hide_index=True)
+
+        with st.expander("📊 Referencias por encuestadora"):
+            ref_enc = df_ref_all.groupby('Encuestadora').size().reset_index(name='Referencias').sort_values('Referencias', ascending=False)
+            st.dataframe(ref_enc, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── Tabla de desagregación por sexo/edad ──
+    st.markdown("**📋 Tabla de desagregación por sexo y edad**")
+
+    def _sexo_es(serie, valores_m, valores_f):
+        """Normaliza y cuenta masculinos y femeninos."""
+        s = serie.astype(str).str.lower().str.strip()
+        m = s.isin(valores_m)
+        f = s.isin(valores_f)
+        return int(m.sum()), int(f.sum())
+
+    VAL_M = ['masculino','m','hombre','niño','male','masc']
+    VAL_F = ['femenino','f','mujer','niña','female','fem']
+
+    # Niños/Niñas (<5) — desde repeat group
+    if not ninos_u5.empty and 'Sexo' in ninos_u5.columns:
+        n_ninos_m, n_ninos_f = _sexo_es(ninos_u5['Sexo'], VAL_M, VAL_F) if 'Sexo' in ninos_u5.columns else (0, 0)
+    else:
+        n_ninos_m = n_ninos_f = 0
+
+    # Mujeres tamizadas = embarazadas + lactantes, mismo método que Tab 1 (dedup por nombre+perfil)
+    # Hombres = siempre 0 (no son tamizados, solo acompañantes)
+    if 'perfil' in df.columns:
+        _df_mat_tab = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre', 'perfil'])
+        n_adult_f = int(_df_mat_tab['perfil'].isin(PERFILES_MATERNAS).sum())
+    else:
+        n_adult_f = 0
+    n_adult_m = 0  # hombres no son tamizados
+
+    # Consejería — hoja principal (todas las filas con consejería = Sí)
+    if 'consejeria' in df.columns:
+        df_cons = df[df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)]
+        df_cons_u = df_cons.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+        cons_f = len(df_cons_u)
+        cons_m = 0
+        total_cons = cons_f
+    else:
+        cons_m = cons_f = total_cons = 0
+
+    # ── Tabla global ──
+    tabla_desag = pd.DataFrame([
+        {
+            'Actividad':     'Personas tamizadas',
+            'Niños (<5)':    n_ninos_m, 'Niñas (<5)': n_ninos_f,
+            'Mujeres (≥18)': n_adult_f, 'Hombres (≥18)': 0,
+            'Total':         n_ninos_m + n_ninos_f + n_adult_f,
+        },
+        {
+            'Actividad':     'Personas que recibieron consejería',
+            'Niños (<5)':    '—', 'Niñas (<5)': '—',
+            'Mujeres (≥18)': cons_f, 'Hombres (≥18)': 0,
+            'Total':         total_cons,
+        },
+    ])
+    st.dataframe(tabla_desag, use_container_width=True, hide_index=True)
+    st.caption("Mujeres ≥18 = embarazadas/lactantes con medición (peso, talla o IMC). Hombres = 0 (no son tamizados).")
+
+    # ── Tabla por zona ──
+    # IMPORTANTE: usa exactamente el mismo método de conteo que Tab 1
+    #   - Ninos: len() de todos los ninos en esa zona (sin filtrar por sexo)
+    #   - Maternas: dedup por (nombre, perfil), filtro por PERFILES_MATERNAS (igual que global)
+    st.markdown("**📋 Desagregación por zona**")
+    filas_zona = []
+    zonas_lista = sorted(set(
+        list(ninos['Municipio'].dropna().unique() if not ninos.empty and 'Municipio' in ninos.columns else []) +
+        list(df['Municipio'].dropna().unique() if 'Municipio' in df.columns else [])
+    ))
+    for zona in zonas_lista:
+        # Niños de esa zona — total + desglose por sexo (sin excluir sexos no reconocidos del total)
+        n_zona = ninos[ninos['Municipio'] == zona] if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame()
+        n_total_zona = len(n_zona)
+        nm, nf = _sexo_es(n_zona['Sexo'], VAL_M, VAL_F) if not n_zona.empty and 'Sexo' in n_zona.columns else (0, 0)
+        # Ninos con sexo no reconocido se incluyen en total pero no en nm/nf
+        n_otro_sexo = n_total_zona - nm - nf
+
+        # Maternas de esa zona — mismo método que Tab 1: dedup (nombre, perfil), filtro perfil
+        if 'perfil' in df.columns and 'Municipio' in df.columns:
+            df_mat_zona = (df[df['Municipio'] == zona]
+                           .dropna(subset=['nombre'])
+                           .drop_duplicates(subset=['nombre', 'perfil']))
+            n_emb_zona = int(df_mat_zona['perfil'].isin(PERFILES_EMBARAZADA).sum())
+            n_lac_zona = int(df_mat_zona['perfil'].isin(PERFILES_LACTANTE).sum())
+        else:
+            n_emb_zona = n_lac_zona = 0
+        af = n_emb_zona + n_lac_zona
+
+        # Consejería zona
+        df_cons_zona = (df[(df['Municipio'] == zona) &
+                           df['consejeria'].astype(str).str.contains('Sí|Si|sí|si', case=False, na=False)]
+                        .dropna(subset=['nombre'])
+                        .drop_duplicates(subset=['nombre'])
+                        if 'consejeria' in df.columns and 'Municipio' in df.columns
+                        else pd.DataFrame())
+        cons_zona = len(df_cons_zona)
+
+        total_zona = n_total_zona + af
+        if total_zona > 0 or cons_zona > 0:
+            filas_zona.append({
+                'Zona': zona,
+                'Niños': nm + n_otro_sexo,   # niños incluye los de sexo no reconocido
+                'Niñas': nf,
+                'Embarazadas': n_emb_zona,
+                'Lactantes': n_lac_zona,
+                'Total tamizados': total_zona,
+                'Con consejería': cons_zona,
+            })
+
+    if filas_zona:
+        df_zona_tabla = pd.DataFrame(filas_zona)
+        # Fila total — debe coincidir con total_tamizados de Tab 1
+        total_row = {
+            'Zona': '📊 TOTAL',
+            'Niños': df_zona_tabla['Niños'].sum(),
+            'Niñas': df_zona_tabla['Niñas'].sum(),
+            'Embarazadas': df_zona_tabla['Embarazadas'].sum(),
+            'Lactantes': df_zona_tabla['Lactantes'].sum(),
+            'Total tamizados': df_zona_tabla['Total tamizados'].sum(),
+            'Con consejería': df_zona_tabla['Con consejería'].sum(),
+        }
+        df_zona_tabla = pd.concat([df_zona_tabla, pd.DataFrame([total_row])], ignore_index=True)
+        st.dataframe(df_zona_tabla, use_container_width=True, hide_index=True)
+        # Verificar consistencia con total global
+        _diff = int(total_tamizados) - int(total_row['Total tamizados'])
+        if abs(_diff) > 0:
+            st.caption(f"⚠️ Diferencia de {_diff} registros vs total global ({total_tamizados}). "
+                       f"Pueden ser registros con Municipio vacío en el KoBo original.")
+    else:
+        st.info("Sin datos por zona disponibles.")
+
+    # ── Tabla por cantón ──
+    st.markdown("**📋 Desagregación por cantón**")
+    canton_col = 'canton_nombre'
+    filas_canton = []
+    if canton_col in ninos.columns or canton_col in df.columns:
+        cantones_lista = sorted(set(
+            list(ninos[canton_col].dropna().unique() if canton_col in ninos.columns else []) +
+            list(df[canton_col].dropna().unique() if canton_col in df.columns else [])
+        ))
+        for canton in cantones_lista:
+            # Niños de ese cantón
+            n_cant = ninos[ninos[canton_col] == canton] if canton_col in ninos.columns and not ninos.empty else pd.DataFrame()
+            nm_c, nf_c = _sexo_es(n_cant['Sexo'], VAL_M, VAL_F) if not n_cant.empty and 'Sexo' in n_cant.columns else (0, 0)
+
+            # Mujeres tamizadas de ese cantón
+            df_cant = df[(df[canton_col] == canton)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre']) if canton_col in df.columns else pd.DataFrame()
+            if not df_cant.empty and all(c in df_cant.columns for c in ['peso','talla','imc']):
+                df_cant = df_cant[df_cant[['peso','talla','imc']].notna().any(axis=1)]
+            elif not df_cant.empty and 'perfil' in df_cant.columns:
+                df_cant = df_cant[df_cant['perfil'].isin(PERFILES_MATERNAS)]
+            af_c = len(df_cant)
+
+            total_c = nm_c + nf_c + af_c
+            if total_c > 0:
+                zona_c = ninos.loc[ninos[canton_col] == canton, 'Municipio'].mode()[0] if canton_col in ninos.columns and not ninos.empty and 'Municipio' in ninos.columns and (ninos[canton_col] == canton).any() else ''
+                filas_canton.append({
+                    'Zona': zona_c,
+                    'Cantón': canton,
+                    'Niños': nm_c, 'Niñas': nf_c,
+                    'Mujeres ≥18': af_c, 'Hombres ≥18': 0,
+                    'Total': total_c,
+                })
+        if filas_canton:
+            df_canton_tabla = pd.DataFrame(filas_canton).sort_values(['Zona','Cantón'])
+            total_row_c = {
+                'Zona': '', 'Cantón': '📊 TOTAL',
+                'Niños': df_canton_tabla['Niños'].sum(),
+                'Niñas': df_canton_tabla['Niñas'].sum(),
+                'Mujeres ≥18': df_canton_tabla['Mujeres ≥18'].sum(),
+                'Hombres ≥18': 0,
+                'Total': df_canton_tabla['Total'].sum(),
+            }
+            df_canton_tabla = pd.concat([df_canton_tabla, pd.DataFrame([total_row_c])], ignore_index=True)
+            st.dataframe(df_canton_tabla, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos por cantón disponibles.")
+    else:
+        st.info("No se encontró columna de cantón — verificar catálogos geográficos.")
+
+    st.markdown("---")
+
+    # ── Gráfica avance diario ──
+    st.markdown("**📅 Avance diario de tamizados (niños + maternas)**")
+    if not ninos.empty and 'fecha_dia' in ninos.columns:
+        diario_n = ninos.groupby('fecha_dia').size().reset_index(name='Niños')
+        if 'fecha_dia' in df.columns:
+            if all(c in df.columns for c in ['peso','talla','imc']):
+                _dm = df.dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+                _dm = _dm[_dm[['peso','talla','imc']].notna().any(axis=1)]
+            elif 'perfil' in df.columns:
+                _dm = df[df['perfil'].isin(PERFILES_MATERNAS)].dropna(subset=['nombre']).drop_duplicates(subset=['nombre'])
+            else:
+                _dm = pd.DataFrame()
+            diario_m = _dm.groupby('fecha_dia').size().reset_index(name='Maternas') if not _dm.empty else pd.DataFrame(columns=['fecha_dia','Maternas'])
+        else:
+            diario_m = pd.DataFrame(columns=['fecha_dia','Maternas'])
+        diario = diario_n.merge(diario_m, on='fecha_dia', how='outer').fillna(0)
+        diario['Total'] = diario['Niños'] + diario['Maternas']
+        diario['fecha_dia'] = pd.to_datetime(diario['fecha_dia'], errors='coerce').dt.strftime('%Y-%m-%d')
+        st.bar_chart(diario.set_index('fecha_dia')[['Niños','Maternas']])
+
+    # (Ver proyección completa en tab "Proyección & Escenarios")
+
+
+# ── TAB 2: PROYECCIÓN ──────────────────────────
+with tab_escenarios:
+    st.subheader("📈 Ritmo de avance y proyección")
+
+    # ── Parámetros ──────────────────────────────────────────────────────────
+    _FECHA_META  = date(2026, 9, 30)   # fecha objetivo de cierre tamizaje
+    _N_EQUIPOS   = 7                   # equipos activos (incluye Equipo Santa Ana)
+    _HOY         = date.today()
+    # Días hábiles (lun-vie) restantes hasta el 30 sep
+    _dias_rest   = max(int(np.busday_count(_HOY.isoformat(), _FECHA_META.isoformat())), 1)
+    _sem_rest    = max(_dias_rest / 5, 0.2)   # semanas laborales restantes (5 días/semana)
+    _faltantes   = max(META_TAMIZAJE - total_tamizados, 0)
+
+    # ── KPIs ────────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("✅ Tamizados",   f"{total_tamizados:,}")
+    k2.metric("⏳ Faltantes",   f"{_faltantes:,}")
+    k3.metric("📅 Días hábiles al 30 sep", str(_dias_rest))
+    k4.metric("⚡ Ritmo actual", f"{tasa_actual:.0f}/día de campo",
+              help="Total tamizados ÷ días de campo realizados")
+
+    st.markdown("---")
+
+    # ── Gráfico: tamizados por semana + promedio diario esa semana ───────────
+    st.markdown("### Ritmo por semana")
+
+    if not ninos.empty and 'semana' in ninos.columns:
+        # Niños por semana
+        _sw_n = ninos.groupby('semana').size().reset_index(name='n')
+        # Maternas por semana
+        if 'perfil' in df.columns and 'semana' in df.columns:
+            _mat_s = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                      .drop_duplicates(subset=['nombre','perfil']))
+            _sw_m = _mat_s.groupby('semana').size().reset_index(name='m') if not _mat_s.empty else pd.DataFrame(columns=['semana','m'])
+        else:
+            _sw_m = pd.DataFrame(columns=['semana','m'])
+
+        _sw = _sw_n.merge(_sw_m, on='semana', how='outer').fillna(0)
+        _sw['Total']  = (_sw['n'] + _sw['m']).astype(int)
+        _sw['semana'] = pd.to_datetime(_sw['semana'].astype(str))
+        _sw = _sw.sort_values('semana').reset_index(drop=True)
+
+        # Promedio diario: semanas completas = Total/5, semana actual (última) = Total/días reales
+        _dias_x_sem = (ninos.dropna(subset=['semana','fecha_dia'])
+                       .groupby('semana')['fecha_dia'].nunique()
+                       .reset_index(name='dias_campo'))
+        _dias_x_sem['semana'] = pd.to_datetime(_dias_x_sem['semana'].astype(str))
+        _sw = _sw.merge(_dias_x_sem, on='semana', how='left')
+        _sw['dias_campo'] = _sw['dias_campo'].fillna(1)
+        # Última semana puede ser incompleta → usar días reales; el resto = 5 hábiles
+        _sw['dias_calc'] = 5
+        _sw.loc[_sw.index[-1], 'dias_calc'] = int(_sw.loc[_sw.index[-1], 'dias_campo'])
+        _sw['Prom. diario'] = (_sw['Total'] / _sw['dias_calc']).round(1)
+
+        # Tasa necesaria
+        _tasa_nec_dia = round(_faltantes / _dias_rest, 1) if _dias_rest > 0 else 0
+        _tasa_nec_sem = round(_faltantes / _sem_rest, 0)  if _sem_rest  > 0 else 0
+
+        _sw['semana_label'] = _sw['semana'].dt.strftime('Sem %d/%m')
+
+        _fig_sem = go.Figure()
+
+        # Barras — número dentro para no chocar con etiquetas de la línea
+        _fig_sem.add_trace(go.Bar(
+            name='Tamizados en la semana',
+            x=_sw['semana_label'], y=_sw['Total'],
+            marker_color='#3498db',
+            text=_sw['Total'], textposition='inside',
+            insidetextanchor='middle',
+            textfont=dict(color='white', size=12),
+            yaxis='y1'
+        ))
+
+        # Línea promedio diario
+        _fig_sem.add_trace(go.Scatter(
+            name='Promedio diario (esa semana)',
+            x=_sw['semana_label'], y=_sw['Prom. diario'],
+            mode='lines+markers+text',
+            text=[f"{v:.0f}/día" for v in _sw['Prom. diario']],
+            textposition=['top center' if i % 2 == 0 else 'bottom center' for i in range(len(_sw))],
+            textfont=dict(size=11, color='#27ae60'),
+            line=dict(color='#2ecc71', width=2.5),
+            marker=dict(size=8),
+            yaxis='y2'
+        ))
+
+        # Línea horizontal tasa necesaria
+        _fig_sem.add_hline(
+            y=_tasa_nec_dia, yref='y2',
+            line_dash='dash', line_color='#e74c3c', line_width=2,
+            annotation_text=f"Meta diaria: {_tasa_nec_dia:.0f}/día para 30 sep",
+            annotation_position="bottom right",
+            annotation_font_color='#e74c3c', annotation_font_size=12
+        )
+
+        _fig_sem.update_layout(
+            yaxis =dict(title='Tamizados/semana', showgrid=True, gridcolor='#eee'),
+            yaxis2=dict(title='Promedio diario', overlaying='y', side='right',
+                        showgrid=False, rangemode='tozero'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(t=60, b=30, l=20, r=60),
+            plot_bgcolor='white', height=440
+        )
+        st.plotly_chart(_fig_sem, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Proyección por equipo según meta de zona ─────────────────────────────
+    st.markdown("### Proyección por equipo")
+
+    # Tamizados actuales por zona
+    _nin_mun2 = ninos[['Municipio']].copy() if not ninos.empty and 'Municipio' in ninos.columns else pd.DataFrame(columns=['Municipio'])
+    if 'perfil' in df.columns and 'Municipio' in df.columns:
+        _mat_mun2 = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                     .drop_duplicates(subset=['nombre','perfil'])[['Municipio']].copy())
+    else:
+        _mat_mun2 = pd.DataFrame(columns=['Municipio'])
+    _tam_mun2 = pd.concat([_nin_mun2, _mat_mun2], ignore_index=True)
+    _actual_mun = _tam_mun2.groupby('Municipio').size().reset_index(name='Logrados') if not _tam_mun2.empty else pd.DataFrame(columns=['Municipio','Logrados'])
+
+    # Tabla por zona/municipio (una fila por zona, sin duplicar cuando varios equipos comparten zona)
+    _filas_proy = []
+    for _zona, _meta in METAS_ZONA.items():
+        # Equipos asignados a esta zona
+        _eqs = DF_EQUIPOS[DF_EQUIPOS['Zona'] == _zona]['Equipo'].unique()
+        _equipos_str = ', '.join(_eqs) if len(_eqs) > 0 else '—'
+        _log_r = _actual_mun[_actual_mun['Municipio'] == _zona]['Logrados'].sum() if not _actual_mun.empty else 0
+        _falt  = max(_meta - _log_r, 0)
+        _nec_d = round(_falt / _dias_rest, 1) if _dias_rest > 0 else 0
+        _nec_s = round(_falt / _sem_rest,  0) if _sem_rest  > 0 else 0
+        _pct   = round(_log_r / _meta * 100, 1) if _meta > 0 else 0
+        _filas_proy.append({
+            'Zona':          _zona,
+            'Equipo(s)':     _equipos_str,
+            'Meta':          _meta,
+            'Logrados':      int(_log_r),
+            '% avance':      f"{_pct}%",
+            'Faltantes':     int(_falt),
+            'Nec./día':      f"{_nec_d:.1f}",
+            'Nec./semana':   f"{int(_nec_s)}",
+        })
+
+    _df_proy = pd.DataFrame(_filas_proy)
+    st.dataframe(_df_proy, use_container_width=True, hide_index=True)
+
+    # Gráfica: barras agrupadas — Meta (gris) vs Logrado (verde) por zona
+    _fig_eq_proy = go.Figure()
+    _fig_eq_proy.add_trace(go.Bar(
+        name='Meta', x=_df_proy['Zona'], y=_df_proy['Meta'],
+        marker_color='#bdc3c7',
+        text=_df_proy['Meta'], textposition='outside',
+        textfont=dict(size=11)
+    ))
+    _fig_eq_proy.add_trace(go.Bar(
+        name='Logrados', x=_df_proy['Zona'], y=_df_proy['Logrados'],
+        marker_color='#2ecc71',
+        text=_df_proy['Logrados'], textposition='outside',
+        textfont=dict(size=11)
+    ))
+    _fig_eq_proy.update_layout(
+        barmode='group', bargap=0.3, bargroupgap=0.05,
+        height=380, yaxis_title='Personas', plot_bgcolor='white',
+        yaxis=dict(showgrid=True, gridcolor='#eee'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(t=50, b=100)
+    )
+    st.plotly_chart(_fig_eq_proy, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Resumen global ───────────────────────────────────────────────────────
+    st.markdown("### ¿Qué necesitan hacer para llegar al 30 de septiembre?")
+    _tasa_nec_eq_dia = round(_tasa_nec_dia / _N_EQUIPOS, 1)
+    _tasa_nec_eq_sem = round(_tasa_nec_sem / _N_EQUIPOS, 0)
+
+    c_nec1, c_nec2 = st.columns(2)
+    with c_nec1:
+        st.markdown("**Todo el equipo**")
+        _df_nec = pd.DataFrame({
+            'Período': ['Por día de campo', 'Por semana (5 días)', 'Semanas restantes', 'Meta al 30 sep'],
+            'Necesario': [
+                f"{_tasa_nec_dia:.0f} tamizajes/día",
+                f"{_tasa_nec_sem:.0f} tamizajes/semana",
+                f"{_sem_rest:.1f} semanas",
+                f"{META_TAMIZAJE:,} ({_faltantes:,} pendientes)",
+            ]
+        })
+        st.dataframe(_df_nec, use_container_width=True, hide_index=True)
+
+    with c_nec2:
+        st.markdown(f"**Por equipo ({_N_EQUIPOS} equipos, promedio)**")
+        _df_eq_res = pd.DataFrame({
+            'Período': ['Por día de campo', 'Por semana (5 días)', 'Ritmo actual total', 'Diferencia vs necesario'],
+            'Valor': [
+                f"{_tasa_nec_eq_dia:.1f} tamizajes/día",
+                f"{_tasa_nec_eq_sem:.0f} tamizajes/semana",
+                f"{tasa_actual:.0f} tamizajes/día total",
+                f"{tasa_actual - _tasa_nec_dia:+.0f}/día {'✅' if tasa_actual >= _tasa_nec_dia else '⚠️ por debajo'}",
+            ]
+        })
+        st.dataframe(_df_eq_res, use_container_width=True, hide_index=True)
+
+
+# ── TAB 3: INDICADORES NUTRICIONALES ───────────
+with tab_indicadores:
+    st.subheader("🥗 Indicadores Nutricionales — Niños <5 años")
+
+    if ninos.empty:
+        st.info("Sin datos de niños disponibles.")
+    else:
+        # ── Resumen de medidas ──
+        st.markdown("### 📏 Resumen de medidas antropométricas")
+        med_data = []
+        for col, lbl, unidad in [
+            ('peso_nino',  'Peso',  'kg'),
+            ('talla_nino', 'Talla', 'cm'),
+            ('muac',       'MUAC (perímetro braquial)', 'cm'),
+        ]:
+            s = ninos[col].dropna() if col in ninos.columns else pd.Series(dtype=float)
+            if not s.empty:
+                med_data.append({
+                    'Medida': f"{lbl} ({unidad})",
+                    'N con dato': len(s),
+                    '% con dato': f"{len(s)/len(ninos)*100:.0f}%",
+                    'Mín':    round(s.min(), 1),
+                    'P25':    round(s.quantile(0.25), 1),
+                    'Mediana':round(s.median(), 1),
+                    'P75':    round(s.quantile(0.75), 1),
+                    'Máx':    round(s.max(), 1),
+                })
+        if med_data:
+            st.dataframe(pd.DataFrame(med_data), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # ── Distribución de diagnósticos ──
+        st.markdown("### 🩺 Distribución de diagnósticos nutricionales")
+
+        DIAG_COLS = {
+            '¿Cuál es el diagnóstico nutricional de la talla y edad?':  'Talla/Edad (T/E)',
+            '¿Cuál es el diagnóstico nutricional de peso edad?':         'Peso/Edad (P/E)',
+            '¿Cuál es el diagnóstico nutricional del peso y la talla?':  'Peso/Talla (P/T)',
+            'Diagnóstico nutricional según perímetro braquial':           'MUAC',
+        }
+
+        diag_resumen = []
+        for col_raw, etiqueta in DIAG_COLS.items():
+            col_diag = None
+            # Buscar en ninos directo
+            if col_raw in ninos.columns:
+                col_diag = ninos[col_raw]
+            if col_diag is not None and col_diag.notna().any():
+                counts = col_diag.value_counts(dropna=True)
+                total_diag = counts.sum()
+                for diag, cnt in counts.items():
+                    diag_resumen.append({
+                        'Indicador': etiqueta,
+                        'Diagnóstico': str(diag),
+                        'N': int(cnt),
+                        '%': f"{cnt/total_diag*100:.1f}%",
+                    })
+
+        if diag_resumen:
+            df_diag = pd.DataFrame(diag_resumen)
+            # Mostrar por indicador en columnas
+            col_te, col_pe, col_pt = st.columns(3)
+            for col_widget, indicador in [(col_te,'Talla/Edad (T/E)'), (col_pe,'Peso/Edad (P/E)'), (col_pt,'Peso/Talla (P/T)')]:
+                sub = df_diag[df_diag['Indicador']==indicador][['Diagnóstico','N','%']]
+                if not sub.empty:
+                    col_widget.markdown(f"**{indicador}**")
+                    col_widget.dataframe(sub, use_container_width=True, hide_index=True)
+
+            muac_sub = df_diag[df_diag['Indicador']=='MUAC'][['Diagnóstico','N','%']]
+            if not muac_sub.empty:
+                st.markdown("**MUAC (perímetro braquial)**")
+                st.dataframe(muac_sub, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay datos de diagnóstico nutricional en la base actual.")
+
+        st.markdown("---")
+
+        # ── Tabla cruzada: diagnósticos por zona ──
+        st.markdown("### 📍 Diagnóstico P/T por zona (desnutrición aguda)")
+        col_pt_raw = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+        if col_pt_raw in ninos.columns and 'Municipio' in ninos.columns:
+            tabla_zona = pd.crosstab(
+                ninos['Municipio'].fillna('Sin zona'),
+                ninos[col_pt_raw].fillna('Sin dato')
+            )
+            tabla_zona['TOTAL'] = tabla_zona.sum(axis=1)
+            st.dataframe(tabla_zona, use_container_width=True)
+        else:
+            st.info("Sin columnas de diagnóstico o municipio disponibles.")
+
+        st.markdown("---")
+        # ── INDICADORES GENERALES (mismo cálculo que el Excel "Cuadro resumen UNICEF") ──
+        st.markdown("### 📋 Indicadores generales — Niñez 0–59 meses")
+        st.caption(
+            "Mismo cálculo que la pestaña *Indicadores generales* del Excel: solo niñez de **0 a 59 meses** "
+            "(edad = fecha de la visita − fecha de nacimiento), validation status vacío o NA. "
+            "**Crónica** = Talla/Edad *Talla baja* o *Talla baja severa*. "
+            "**Aguda (P/T)** = Peso/Talla *Desnutrición*, *Desnutrición severa* o *Emaciado/a*. "
+            "**Aguda por MUAC** = *Desnutrición aguda moderada* o *severa*. "
+            "El % es casos ÷ n de la zona. Incluye también global (P/E), como en el resto del dashboard."
+        )
+        _df_n5 = ninos_u5.copy()
+
+        if _df_n5.empty:
+            st.info("No hay registros de niños menores de 5 años para procesar este cuadro.")
+        else:
+            import unicodedata as _ud
+            def _norm(_s):
+                return _s.fillna('').astype(str).map(lambda t: _ud.normalize('NFKD', t).encode('ascii', 'ignore').decode().lower().strip())
+
+            _c_te = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+            _c_pt = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+            _c_mu = 'Diagnóstico nutricional según perímetro braquial'
+            _c_pe = '¿Cuál es el diagnóstico nutricional de peso edad?'
+
+            def _flag_txt(_col, _pat):
+                return _norm(_df_n5[_col]).str.contains(_pat, na=False, regex=True) if _col in _df_n5.columns else pd.Series(False, index=_df_n5.index)
+
+            _df_n5['f_cro'] = _flag_txt(_c_te, r'talla baja')
+            _df_n5['f_glo'] = _flag_txt(_c_pe, r'desnutrici')
+            _df_n5['f_agu'] = _flag_txt(_c_pt, r'desnutricion|emaciad')
+            _df_n5['f_mua'] = _flag_txt(_c_mu, r'aguda moderada|aguda severa')
+            _df_n5['f_agc'] = _df_n5['f_agu'] | _df_n5['f_mua']
+            _df_n5['f_unica'] = _df_n5['f_agc'] | _df_n5['f_cro']
+
+            def _si(_cols):
+                _r = pd.Series(False, index=_df_n5.index)
+                for _c in _cols:
+                    if _c in _df_n5.columns:
+                        _r |= _df_n5[_c].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
+                return _r
+            _df_n5['f_neu'] = _si(['¿Posee alguna neurodivergencia?', 'nino_¿Posee alguna neurodivergencia?'])
+            _df_n5['f_dis'] = _si(['¿Posee alguna discapacidad?', 'nino_¿Posee alguna discapacidad?'])
+
+            _sx = _df_n5['Sexo'].astype(str).str.lower().str.strip() if 'Sexo' in _df_n5.columns else pd.Series('', index=_df_n5.index)
+            _df_n5['_es_f'] = _sx.isin(VAL_F)
+            _df_n5['_es_m'] = _sx.isin(VAL_M)
+
+            _col_mun = 'Municipio' if 'Municipio' in _df_n5.columns else None
+            _df_n5['zona_res'] = _df_n5[_col_mun].fillna('Desconocido').astype(str).str.strip() if _col_mun else 'Nacional'
+            _zonas = ['Nacional'] + sorted(_df_n5['zona_res'].unique())
+
+            _metrics = [
+                ('Desnutrición crónica (T/E)', 'f_cro'),
+                ('Desnutrición global (P/E)', 'f_glo'),
+                ('Desnutrición aguda (P/T)', 'f_agu'),
+                ('Desnutrición aguda por MUAC', 'f_mua'),
+                ('Desnutrición aguda combinada (P/T o MUAC)', 'f_agc'),
+                ('Neurodivergencia', 'f_neu'),
+                ('Discapacidades', 'f_dis'),
+                ('Aguda y/o crónica (Dn única)', 'f_unica'),
+            ]
+
+            _filas = []
+            for _label, _col in _metrics:
+                _row = {'Indicador': _label}
+                for _z in _zonas:
+                    _d = _df_n5 if _z == 'Nacional' else _df_n5[_df_n5['zona_res'] == _z]
+                    _n = len(_d); _t = int(_d[_col].sum())
+                    _row[f"{_z} | Total"] = str(_t)
+                    _row[f"{_z} | %"] = f"{(_t/_n*100 if _n else 0):.2f}%"
+                    _row[f"{_z} | Fem."] = str(int((_d[_col] & _d['_es_f']).sum()))
+                    _row[f"{_z} | Masc."] = str(int((_d[_col] & _d['_es_m']).sum()))
+                _filas.append(_row)
+            _row_n = {'Indicador': 'n='}
+            for _z in _zonas:
+                _d = _df_n5 if _z == 'Nacional' else _df_n5[_df_n5['zona_res'] == _z]
+                _row_n[f"{_z} | Total"] = str(len(_d))
+                _row_n[f"{_z} | %"] = ""
+                _row_n[f"{_z} | Fem."] = str(int(_d['_es_f'].sum()))
+                _row_n[f"{_z} | Masc."] = str(int(_d['_es_m'].sum()))
+            _filas.append(_row_n)
+            st.dataframe(pd.DataFrame(_filas).astype(str), use_container_width=True, hide_index=True)
+
+            # Indicadores por grupo de edad (aguda y crónica)
+            st.markdown("**Por grupo de edad (Nacional)**")
+            _bins = [(0, 6, '0-5 meses'), (6, 12, '6-11 meses'), (12, 24, '12-23 meses'), (24, 60, '24-59 meses')]
+            _fe = []
+            for _lo, _hi, _lb in _bins:
+                _d = _df_n5[(_df_n5['edad_meses'] >= _lo) & (_df_n5['edad_meses'] < _hi)]
+                _n = len(_d)
+                _fe.append({
+                    'Grupo de edad': _lb, 'n': str(_n),
+                    'Crónica': f"{int(_d['f_cro'].sum())} ({(_d['f_cro'].mean()*100 if _n else 0):.2f}%)",
+                    'Aguda P/T': f"{int(_d['f_agu'].sum())} ({(_d['f_agu'].mean()*100 if _n else 0):.2f}%)",
+                    'Aguda MUAC': f"{int(_d['f_mua'].sum())} ({(_d['f_mua'].mean()*100 if _n else 0):.2f}%)",
+                })
+            st.dataframe(pd.DataFrame(_fe), use_container_width=True, hide_index=True)
+
+        # ── CUADRO RESUMEN GLOBAL DE DESNUTRICIÓN Y CONDICIONES (< 5 años) ──
+        st.markdown("---")
+        st.markdown("### 📋 Cuadro Resumen de Condiciones por Zona (< 5 años)")
+        st.caption("El **Indicador de Dn Única** toma en cuenta la cantidad de niñez que presenta al menos un tipo de desnutrición (crónica, global o aguda).")
+        
+        # 1. Filtro estricto para menores de 5 años (60 meses)
+        _df_n5 = ninos_u5.copy()  # n ajustada: 0–59 meses
+        
+        if not _df_n5.empty:
+            # Variables oficiales de Kobo
+            _c_te = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+            _c_pe = '¿Cuál es el diagnóstico nutricional de peso edad?'
+            _c_pt = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+
+            # 2. Generar Flags estrictos según definiciones de desnutrición (Niñez < 5)
+            _CRO_RE = 'talla baja'
+            _GLO_RE = 'desnutrici'
+            _AGU_RE = 'desnutrici|emaciad|emaciaci'
+
+            _df_n5['f_cro'] = _df_n5[_c_te].astype(str).str.lower().str.contains(_CRO_RE, na=False) if _c_te in _df_n5.columns else False
+            _df_n5['f_glo'] = _df_n5[_c_pe].astype(str).str.lower().str.contains(_GLO_RE, na=False) if _c_pe in _df_n5.columns else False
+            
+            # Aguda estrictamente calculada solo con la columna Peso/Talla (_c_pt)
+            _df_n5['f_agu'] = _df_n5[_c_pt].astype(str).str.lower().str.contains(_AGU_RE, na=False) if _c_pt in _df_n5.columns else False
+
+            # 3. Cálculo de Dn Única: Si tiene Crónica O Global O Aguda (El operador | significa "O")
+            _df_n5['f_unica'] = _df_n5['f_cro'] | _df_n5['f_glo'] | _df_n5['f_agu']
+            # 4. Flags de Neurodivergencia y Discapacidad 
+            _df_n5['f_neu'] = False
+            _df_n5['f_dis'] = False
+            for _col in ['¿Posee alguna neurodivergencia?', 'nino_¿Posee alguna neurodivergencia?']:
+                if _col in _df_n5.columns: 
+                    _df_n5['f_neu'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
+            for _col in ['¿Posee alguna discapacidad?', 'nino_¿Posee alguna discapacidad?']:
+                if _col in _df_n5.columns: 
+                    _df_n5['f_dis'] |= _df_n5[_col].astype(str).str.lower().str.strip().isin(['sí', 'si', 'true', '1'])
+        
+            # 5. Construir la tabla cruzada por Distrito
+            _col_dist = next((c for c in ['distrito_nombre', 'Distrito', 'distrito'] if c in _df_n5.columns), 'Municipio')
+            _df_n5['zona_res'] = _df_n5[_col_dist].fillna('Desconocido').astype(str).str.strip()
+            _zonas = sorted(_df_n5['zona_res'].unique())
+        
+            _metrics = [
+                ('Desnutrición crónica', 'f_cro'),
+                ('Desnutrición Global', 'f_glo'),
+                ('Desnutrición aguda', 'f_agu'),
+                ('Neurodivergencia', 'f_neu'),
+                ('Discapacidades', 'f_dis'),
+                ('Indicador de Dn Única', 'f_unica')
+            ]
+        
+            _filas_resumen = []
+            for _label, _col in _metrics:
+                _row = {'Indicador': _label}
+                for _z in _zonas:
+                    _df_z = _df_n5[_df_n5['zona_res'] == _z]
+                    _n_tot = len(_df_z)
+                    _sum = int(_df_z[_col].sum())
+                    _pct = (_sum / _n_tot * 100) if _n_tot > 0 else 0
+                    
+                    # Formato plano para evitar errores de PyArrow en Streamlit
+                    _row[f"{_z} (Total)"] = str(_sum)
+                    _row[f"{_z} (%)"] = f"{_pct:.1f}%"
+                _filas_resumen.append(_row)
+        
+            # Fila final de "n=" (Población total evaluada por zona)
+            _row_n = {'Indicador': 'n='}
+            for _z in _zonas:
+                _n_tot = len(_df_n5[_df_n5['zona_res'] == _z])
+                _row_n[f"{_z} (Total)"] = str(_n_tot)
+                _row_n[f"{_z} (%)"] = ""
+            _filas_resumen.append(_row_n)
+        
+            # Convertir estrictamente todo a String para garantizar estabilidad visual
+            _df_final = pd.DataFrame(_filas_resumen).astype(str)
+            st.dataframe(_df_final, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay registros de niños menores de 5 años para procesar este cuadro.")
+        st.markdown("### 📊 Distribución de peso y talla")
+        col_h1, col_h2 = st.columns(2)
+
+        with col_h1:
+            st.markdown("**Peso (kg)**")
+            if 'peso_nino' in ninos.columns:
+                p = ninos['peso_nino'].dropna()
+                p = p[(p >= 2) & (p <= 35)]
+                if not p.empty:
+                    hist_p, edges_p = np.histogram(p, bins=range(2, 36, 2))
+                    hp_df = pd.DataFrame({
+                        'kg': [f"{int(edges_p[i])}-{int(edges_p[i+1])}" for i in range(len(hist_p))],
+                        'Niños': hist_p,
+                    })
+                    st.bar_chart(hp_df.set_index('kg'))
+
+        with col_h2:
+            st.markdown("**Talla (cm)**")
+            if 'talla_nino' in ninos.columns:
+                t = ninos['talla_nino'].dropna()
+                t = t[(t >= 40) & (t <= 130)]
+                if not t.empty:
+                    hist_t, edges_t = np.histogram(t, bins=range(40, 135, 5))
+                    ht_df = pd.DataFrame({
+                        'cm': [f"{int(edges_t[i])}-{int(edges_t[i+1])}" for i in range(len(hist_t))],
+                        'Niños': hist_t,
+                    })
+                    st.bar_chart(ht_df.set_index('cm'))
+
+        # ── Indicadores de madres (embarazadas) ──
+        st.markdown("---")
+        st.markdown("### 🤰 Indicadores de mujeres embarazadas")
+        df_emb = df[df['perfil'].isin(PERFILES_EMBARAZADA)].copy() if 'perfil' in df.columns else pd.DataFrame()
+        if not df_emb.empty and 'talla' in df_emb.columns and 'peso' in df_emb.columns:
+            emb_med = []
+            for col, lbl, unidad in [('peso','Peso','kg'),('talla','Talla','m'),('imc','IMC',''),('eg_sem','Edad gestacional','sem')]:
+                s = df_emb[col].dropna() if col in df_emb.columns else pd.Series(dtype=float)
+                if not s.empty:
+                    emb_med.append({'Medida':f"{lbl} ({unidad})" if unidad else lbl,
+                                    'N':len(s),'Mín':round(s.min(),2),'Mediana':round(s.median(),2),'Máx':round(s.max(),2)})
+            if emb_med:
+                st.dataframe(pd.DataFrame(emb_med), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos de embarazadas en la base actual.")
+
+
+# ── TAB 4: FLAGS ───────────────────────────────
+with tab_flags:
+    st.subheader("🚦 Resumen de Flags de Calidad")
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Total entrevistas", len(df))
+    c2.metric("🔴 Flags críticos", n_alta)
+    c3.metric("🟡 Flags medios",  n_media)
+    c4.metric("Registros con flag", todos['_id'].nunique() if not todos.empty else 0)
+
+    if todos.empty:
+        st.success("✅ Sin problemas detectados.")
+    else:
+        resumen = todos.groupby(['flag','severidad']).size().reset_index(name='n').sort_values(['severidad','n'], ascending=[True,False])
+        for _, row in resumen.iterrows():
+            cls = 'flag-high' if row['severidad']=='Alta' else 'flag-medium'
+            st.markdown(f'<div class="{cls}"><strong>{row["flag"]}</strong> — {row["n"]} registro(s)</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag','severidad'] if c in todos.columns]
+        st.dataframe(todos[cols].sort_values('severidad'), use_container_width=True, hide_index=True)
+
+
+# ── TAB: REFERENCIAS ───────────────────────────────────────────────────────
+with tab_ref_check:
+    st.subheader("🚨 Control de Calidad — Referencias")
+    st.caption(
+        "Revisión de congruencia entre diagnóstico nutricional (peso/talla) y referencia. "
+        "**Rojo** = debería haberse referido y no se hizo. **Amarillo** = se hizo referencia pero el diagnóstico es normal."
+    )
+
+    if f_ref.empty:
+        st.success("✅ Sin inconsistencias de referencia detectadas.")
+    else:
+        # KPIs
+        n_sin_ref   = int((f_ref['severidad'] == 'Alta').sum())
+        n_ref_dudosa= int((f_ref['severidad'] == 'Media').sum())
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total inconsistencias", len(f_ref))
+        k2.metric("🔴 Sin referencia (debería)", n_sin_ref)
+        k3.metric("🟡 Referencia dudosa (dx normal)", n_ref_dudosa)
+
+        st.markdown("---")
+
+        # ── Casos sin referencia (prioritario) ─────────────────────────────
+        f_sin_ref = f_ref[f_ref['severidad'] == 'Alta']
+        if not f_sin_ref.empty:
+            st.markdown(f"### 🔴 Sin referencia — diagnóstico crítico ({len(f_sin_ref)} casos)")
+            st.caption("Estos niños/as o personas tienen desnutrición aguda / emaciación registrada pero **no se les hizo referencia**. Requieren seguimiento inmediato.")
+            cols_show = [c for c in ['nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag'] if c in f_sin_ref.columns]
+            st.dataframe(
+                f_sin_ref[cols_show].rename(columns={'fecha_dia':'Fecha','encuestador':'Encuestadora','distrito_nombre':'Distrito'})
+                .sort_values('Fecha', ascending=False),
+                use_container_width=True, hide_index=True
+            )
+
+            # Descarga
+            buf_sr = io.BytesIO()
+            f_sin_ref[cols_show].to_excel(buf_sr, index=False); buf_sr.seek(0)
+            st.download_button("⬇️ Descargar listado sin referencia (.xlsx)", buf_sr,
+                               "sin_referencia_urgente.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            st.markdown("---")
+
+        # ── Niños con diagnóstico normal/vulnerable pero con referencia ──────
+        st.markdown("### 🟡 Niños referenciados con diagnóstico normal")
+        st.caption("Estos niños recibieron referencia aunque su diagnóstico no indica desnutrición crítica. "
+                   "Se recomienda revisar el caso con la encuestadora para validar el criterio clínico.")
+
+        # Construir tabla directamente desde ninos para incluir todas las columnas clínicas
+        _col_ref_n  = '¿Se brindó referencia?'
+        _col_pt     = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+        _col_te     = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+        _col_pe     = '¿Cuál es el diagnóstico nutricional de peso edad?'
+        _col_muac   = 'Diagnóstico nutricional según perímetro braquial'
+        _col_nombre = '¿Cuál es el nombre del niño/a?'
+        _CRITICOS   = ['desnutrici','emaciado','emaciacion','aguda severa','aguda moderada']
+
+        if not ninos.empty and _col_ref_n in ninos.columns and _col_pt in ninos.columns:
+            _mask_ref = ninos[_col_ref_n].astype(str).str.lower().str.strip() == 'sí'
+            # Solo el dx peso/talla determina si la referencia es correcta.
+            # Si peso/talla NO es crítico (no es emaciado/desnutrición) → referencia incorrecta.
+            _dx_pt_val = ninos[_col_pt].astype(str).str.lower().str.strip()
+            _mask_pt_no_critico = ~_dx_pt_val.apply(
+                lambda v: any(c in v for c in _CRITICOS)
+            )
+            _mal_ref = ninos[_mask_ref & _mask_pt_no_critico].copy()
+
+            if _mal_ref.empty:
+                st.success("✅ No hay niños con referencia y diagnóstico normal.")
+            else:
+                st.warning(f"⚠️ {len(_mal_ref)} niños referenciados sin diagnóstico crítico")
+
+                # Tabla con todas las columnas clínicas
+                _cols_display = {
+                    'encuestador':   'Encuestadora',
+                    'Municipio':     'Municipio',
+                    'distrito_nombre':'Distrito',
+                    _col_nombre:     'Nombre niño/a',
+                    'edad_txt':      'Edad',
+                    'peso_nino':     'Peso (kg)',
+                    'talla_nino':    'Talla (cm)',
+                    _col_te:         'Dx talla/edad',
+                    _col_pe:         'Dx peso/edad',
+                    _col_pt:         'Dx peso/talla',
+                    _col_muac:       'Dx perímetro braquial',
+                    _col_ref_n:      'Referencia',
+                }
+                _cols_ok = {k: v for k, v in _cols_display.items() if k in _mal_ref.columns}
+                _tabla_mal_ref = _mal_ref[list(_cols_ok.keys())].rename(columns=_cols_ok)
+
+                st.dataframe(_tabla_mal_ref, use_container_width=True, hide_index=True)
+
+                # Descarga Excel
+                _buf_mr = io.BytesIO()
+                _tabla_mal_ref.to_excel(_buf_mr, index=False); _buf_mr.seek(0)
+                st.download_button(
+                    "⬇️ Descargar tabla para re-análisis (.xlsx)",
+                    _buf_mr,
+                    "ninos_mal_referenciados.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        else:
+            st.info("No hay datos suficientes para evaluar referencias.")
+
+        # ── Resumen por encuestadora ────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Por encuestadora**")
+        if 'encuestador' in f_ref.columns:
+            resumen_enc = (
+                f_ref.groupby(['encuestador','severidad'])
+                .size().unstack(fill_value=0).reset_index()
+                .rename(columns={'encuestador':'Encuestadora','Alta':'Sin referencia 🔴','Media':'Ref. dudosa 🟡'})
+            )
+            st.dataframe(resumen_enc, use_container_width=True, hide_index=True)
+
+
+# ── TAB 5: DURACIÓN ────────────────────────────
+with tab_dur:
+    st.subheader("⏱️ Duración de Entrevistas")
+    dur = df['duracion_min'].dropna()
+    dur_v = dur[dur < 1000]
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Mediana", f"{dur_v.median():.1f} min")
+    c2.metric("< 5 min", int((dur_v<5).sum()))
+    c3.metric("> 90 min", int((dur_v>90).sum()))
+    c4.metric("Subidos con retraso (>1000 min)", int((dur>=1000).sum()), help="Sin internet en campo — la duración no refleja el tiempo real de entrevista")
+    if len(dur_v) > 0:
+        hist, edges = np.histogram(dur_v.clip(upper=120), bins=range(0,125,5))
+        # Usar etiquetas con cero a la izquierda para que ordenen correctamente como texto
+        hdf = pd.DataFrame({
+            'Minutos': [f"{int(edges[i]):03d}-{int(edges[i+1]):03d}" for i in range(len(hist))],
+            'Entrevistas': hist
+        })
+        st.bar_chart(hdf.set_index('Minutos'))
+        st.caption("Eje X: rango de duración en minutos. La mayoría de entrevistas dura entre 5 y 15 minutos.")
+    if not f_dur.empty:
+        cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','duracion_min','flag'] if c in f_dur.columns]
+        st.dataframe(f_dur[cols], use_container_width=True, hide_index=True)
+
+
+# ── TAB 5: DUPLICADOS ──────────────────────────
+with tab_dups:
+    st.subheader("👥 Duplicados")
+    if f_dup.empty:
+        st.success("✅ Sin duplicados detectados.")
+    else:
+        dup_prob   = f_dup[f_dup['severidad']=='Alta']
+        dup_verif  = f_dup[f_dup['severidad']=='Media']
+
+        c1, c2 = st.columns(2)
+        c1.metric("🔴 Duplicados probables (eliminar)", dup_prob['nombre'].nunique() if not dup_prob.empty else 0, help="Misma madre, misma fecha, sin hijos distintos")
+        c2.metric("🟡 Verificar (posibles hijos distintos)", dup_verif['nombre'].nunique() if not dup_verif.empty else 0)
+
+        if not dup_prob.empty:
+            st.markdown("#### 🔴 Duplicados probables — recomendado eliminar")
+            st.caption("Misma madre, misma fecha. No se detectaron hijos distintos en el repeat group. Conserva el registro con más datos o el primero cronológicamente.")
+            cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','detalle'] if c in dup_prob.columns]
+            st.dataframe(dup_prob[cols], use_container_width=True, hide_index=True)
+
+        if not dup_verif.empty:
+            st.markdown("#### 🟡 Verificar antes de eliminar — posibles hijos distintos")
+            st.caption("Misma madre, misma fecha, pero se detectaron nombres de hijos distintos en los submissions. NO eliminar sin revisar.")
+            cols = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','detalle'] if c in dup_verif.columns]
+            st.dataframe(dup_verif[cols], use_container_width=True, hide_index=True)
+
+
+# ── TAB 6: OUTLIERS ────────────────────────────
+with tab_out:
+    st.subheader("📈 Valores Fuera de Rango")
+    num_cols = {'peso':'Peso (kg)','talla':'Talla (m)','imc':'IMC','eg_sem':'Sem. gestación'}
+    resumen_n = []
+    for col, lbl in num_cols.items():
+        if col in df.columns and df[col].notna().any():
+            resumen_n.append({'Variable':lbl,'N':int(df[col].notna().sum()),
+                              'Mín':round(float(df[col].min()),2),
+                              'Mediana':round(float(df[col].median()),2),
+                              'Máx':round(float(df[col].max()),2)})
+    if resumen_n:
+        st.dataframe(pd.DataFrame(resumen_n), use_container_width=True, hide_index=True)
+
+    # Tallas auto-corregidas (ingresadas sin decimal)
+    if not ninos.empty and 'talla_corregida' in ninos.columns:
+        corr_talla = ninos[ninos['talla_corregida'] == True]
+        if not corr_talla.empty:
+            st.warning(f"⚠️ {len(corr_talla)} tallas de niños auto-corregidas (valor ingresado sin punto decimal, ej: 915 → 91.5 cm)")
+            cols_ct = [c for c in ['¿Cuál es el nombre del niño/a?','fecha_dia','Municipio','peso_nino','talla_nino'] if c in corr_talla.columns]
+            ct_show = corr_talla[cols_ct].copy()
+            ct_show.columns = [c.replace('¿Cuál es el nombre del niño/a?','Nombre niño/a')
+                                 .replace('fecha_dia','Fecha').replace('peso_nino','Peso (kg)')
+                                 .replace('talla_nino','Talla corregida (cm)') for c in ct_show.columns]
+            st.dataframe(ct_show, use_container_width=True, hide_index=True)
+
+    st.markdown("**Niños con medidas fuera de rango (tras corrección)**")
+    if not ninos.empty:
+        mask_n = (
+            (ninos['peso_nino'].notna() & ((ninos['peso_nino']<3)|(ninos['peso_nino']>35))) |
+            (ninos['talla_nino'].notna() & ((ninos['talla_nino']<40)|(ninos['talla_nino']>130))) |
+            (ninos['muac'].notna() & ((ninos['muac']<8)|(ninos['muac']>22)))
+        )
+        ninos_out = ninos[mask_n]
+        if not ninos_out.empty:
+            st.warning(f"{len(ninos_out)} niños con medidas fuera de rango")
+            cols_n = [c for c in ['¿Cuál es el nombre del niño/a?','fecha_dia','encuestador','Municipio','peso_nino','talla_nino','muac'] if c in ninos_out.columns]
+            st.dataframe(ninos_out[cols_n], use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ Sin outliers en medidas de niños.")
+
+    if f_out.empty:
+        st.success("✅ Sin outliers en madres.")
+    else:
+        cols = [c for c in ['_id','nombre','fecha_dia','encuestador','flag'] if c in f_out.columns]
+        st.dataframe(f_out[cols], use_container_width=True, hide_index=True)
+
+
+# ── TAB 7: POR ENCUESTADORA ────────────────────
+with tab_enc:
+    st.subheader("👩‍💼 Equipos y Encuestadoras")
+
+    # ── RESUMEN CONSOLIDADO POR EQUIPO ───────────────────────────────────────
+    st.markdown("### 📊 Resumen por equipo")
+
+    if not ninos.empty and 'encuestador' in ninos.columns and 'fecha_dia' in ninos.columns:
+        # Mapa encuestador → equipo y zona
+        _enc_equipo = DF_EQUIPOS[['Nombre','Equipo','Zona','Región']].drop_duplicates('Nombre').set_index('Nombre')
+
+        # Base combinada: niños + TODAS las embarazadas/lactantes
+        # (misma lógica que Tab 1: tamizados = individuos evaluados, sin importar
+        #  si el hogar también tiene un niño — madre e hijo son personas distintas)
+        _nin_enc_base = ninos[['encuestador','fecha_dia']].copy()
+        if 'perfil' in df.columns:
+            _mat_enc_base = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                             .drop_duplicates(subset=['nombre','perfil'])   # misma dedup que Tab 1
+                             [['encuestador','fecha_dia']].copy())
+        else:
+            _mat_enc_base = pd.DataFrame(columns=['encuestador','fecha_dia'])
+        _todos_enc_base = pd.concat([_nin_enc_base, _mat_enc_base], ignore_index=True)
+
+        # Total calculado directamente del base combinado (niños deduplicados + maternas)
+        _total_global  = len(_todos_enc_base)
+        _dias_globales = _todos_enc_base['fecha_dia'].nunique()
+        _prom_global   = _total_global / _dias_globales if _dias_globales > 0 else 0
+
+        # Tamizados por encuestador
+        _tam_por_enc = (_todos_enc_base.groupby('encuestador')
+                        .agg(Tamizados=('encuestador','count')).reset_index())
+        _tam_por_enc['Equipo'] = _tam_por_enc['encuestador'].map(_enc_equipo['Equipo'])
+        _tam_por_enc['Región'] = _tam_por_enc['encuestador'].map(_enc_equipo['Región'])
+        _tam_por_enc['Zona']   = _tam_por_enc['encuestador'].map(_enc_equipo['Zona'])
+
+        # Días únicos por equipo: unir todo el base con el mapa encuestador→Equipo
+        _enc_eq_map = _tam_por_enc.dropna(subset=['Equipo'])[['encuestador','Equipo']]
+        _base_con_eq = _todos_enc_base.merge(_enc_eq_map, on='encuestador', how='left')
+        _dias_por_equipo = (_base_con_eq.dropna(subset=['Equipo','fecha_dia'])
+                            .groupby('Equipo')['fecha_dia'].nunique()
+                            .reset_index(name='Días campo equipo'))
+
+        # Base de todos los equipos (para mostrar los que tienen 0)
+        _equipos_base = (DF_EQUIPOS[['Región','Equipo','Zona']]
+                         .drop_duplicates(['Equipo','Zona'])
+                         .reset_index(drop=True))
+
+        # Tamizados por equipo+zona (un equipo puede tener varias zonas)
+        _tam_eq = (_tam_por_enc.dropna(subset=['Equipo']).groupby(['Región','Equipo','Zona'])
+                   .agg(Tamizados=('Tamizados','sum')).reset_index())
+
+        # Merge con base completa → equipos con 0 también aparecen
+        _resumen_equipo = _equipos_base.merge(_tam_eq, on=['Región','Equipo','Zona'], how='left')
+        _resumen_equipo['Tamizados'] = _resumen_equipo['Tamizados'].fillna(0).astype(int)
+        _resumen_equipo = _resumen_equipo.merge(_dias_por_equipo, on='Equipo', how='left')
+        _resumen_equipo['Días campo equipo'] = _resumen_equipo['Días campo equipo'].fillna(0).astype(int)
+        _resumen_equipo['Prom./día'] = (_resumen_equipo['Tamizados'] / _resumen_equipo['Días campo equipo'].replace(0, pd.NA)).round(1)
+
+        # KPIs rápidos
+        _col1, _col2, _col3 = st.columns(3)
+        _col1.metric("Total equipos activos", int((_resumen_equipo['Tamizados'] > 0).sum()))
+        _col2.metric("Promedio tamizajes/día (global)", f"{_prom_global:.1f}",
+                     help=f"({_total_global} tamizados ÷ {_dias_globales} días de campo únicos) — igual al dashboard principal")
+        _col3.metric("Equipo más productivo", _resumen_equipo.loc[_resumen_equipo['Tamizados'].idxmax(), 'Equipo'] if not _resumen_equipo.empty else "—")
+
+        # Tabla por equipo con fila TOTAL (días no se suman — son días únicos por equipo)
+        _res_eq_display = _resumen_equipo[['Región','Equipo','Zona','Tamizados','Días campo equipo','Prom./día']].sort_values('Tamizados', ascending=False).copy()
+        _tot_eq = pd.DataFrame([{
+            'Región': '', 'Equipo': '📊 TOTAL', 'Zona': '',
+            'Tamizados': int(_total_global),   # total real (535), no suma parcial
+            'Días campo equipo': '—',
+            'Prom./día': ''
+        }])
+        st.dataframe(
+            pd.concat([_res_eq_display, _tot_eq], ignore_index=True),
+            column_config={
+                'Tamizados':         st.column_config.NumberColumn('Tamizados', help='Niños + maternas sin niños (sin doble conteo)'),
+                'Días campo equipo': st.column_config.TextColumn('Días campo equipo', help='Días únicos con actividad del equipo. No se suma porque cada equipo puede coincidir en el mismo día.'),
+                'Prom./día':         st.column_config.NumberColumn('Prom./día', help='Tamizados ÷ días de campo del equipo'),
+            },
+            use_container_width=True, hide_index=True
+        )
+        # Para la gráfica mantenemos el mismo dataframe
+        _resumen_eq_meta = _resumen_equipo.copy()
+
+        # Gráfica: tamizados por equipo
+        st.markdown("**📊 Tamizados por equipo**")
+        _chart_eq_agg = _resumen_eq_meta.groupby('Equipo', as_index=False).agg(
+            Tamizados=('Tamizados','sum')
+        ).sort_values('Tamizados')
+        _fig_eq = go.Figure(go.Bar(
+            x=_chart_eq_agg['Equipo'].tolist(), y=_chart_eq_agg['Tamizados'].tolist(),
+            marker_color='#4472C4', text=_chart_eq_agg['Tamizados'].tolist(), textposition='outside'
+        ))
+        _fig_eq.update_layout(margin=dict(t=40, b=60), height=360,
+                               yaxis_title='Tamizados', xaxis_tickangle=-20, plot_bgcolor='white')
+        st.plotly_chart(_fig_eq, use_container_width=True)
+
+        # Gráfica: promedio diario por equipo
+        st.markdown("**⚡ Promedio diario por equipo**")
+        _chart_prom = _resumen_eq_meta.dropna(subset=['Prom./día']).set_index('Equipo')['Prom./día'].sort_values()
+        _fig_prom = go.Figure(go.Bar(
+            x=_chart_prom.index.tolist(), y=_chart_prom.values.tolist(),
+            marker_color='#3498db',
+            text=[f"{v:.1f}" for v in _chart_prom.values], textposition='outside'
+        ))
+        _fig_prom.update_layout(margin=dict(t=40, b=20), height=320, yaxis_title='Tamizajes/día')
+        st.plotly_chart(_fig_prom, use_container_width=True)
+
+        # Gráficas de avance diario por equipo (una por equipo)
+        st.markdown("**📅 Avance diario por equipo**")
+        if not ninos.empty and 'fecha_dia' in ninos.columns and 'encuestador' in ninos.columns:
+            _ninos_eq = ninos.copy()
+            # Normalizar fecha_dia a solo fecha (sin timestamp)
+            _ninos_eq['fecha_dia'] = pd.to_datetime(_ninos_eq['fecha_dia'], errors='coerce').dt.date
+            _ninos_eq['Equipo'] = _ninos_eq['encuestador'].map(_enc_equipo['Equipo'])
+
+            # Filtro por semana
+            if 'semana' in _ninos_eq.columns:
+                _ninos_eq['semana_dt']  = pd.to_datetime(_ninos_eq['semana'].astype(str), errors='coerce')
+                _ninos_eq['semana_str'] = _ninos_eq['semana_dt'].dt.strftime('Sem %d/%m/%Y')
+                _ninos_eq['semana_str'] = _ninos_eq['semana_str'].fillna('Sin fecha')
+                _sems_disp = ['Todas'] + sorted(
+                    [s for s in _ninos_eq['semana_str'].unique() if s != 'Sin fecha']
+                ) + (['Sin fecha'] if 'Sin fecha' in _ninos_eq['semana_str'].values else [])
+                _sem_sel_eq = st.selectbox("Filtrar por semana", _sems_disp, key='sem_eq_diario')
+                if _sem_sel_eq != 'Todas':
+                    _ninos_eq = _ninos_eq[_ninos_eq['semana_str'] == _sem_sel_eq]
+
+            _equipos_activos = sorted(_ninos_eq['Equipo'].dropna().unique())
+            # 2 columnas
+            _cols_eq = st.columns(2)
+            for _i, _eq in enumerate(_equipos_activos):
+                _subset = _ninos_eq[_ninos_eq['Equipo'] == _eq]
+                _diario_eq = _subset.groupby('fecha_dia').size().reset_index(name='Tamizados')
+                _diario_eq['fecha_dia'] = pd.to_datetime(_diario_eq['fecha_dia'], errors='coerce').dt.strftime('%d/%m')
+                with _cols_eq[_i % 2]:
+                    _fig_deq = go.Figure(go.Bar(
+                        x=_diario_eq['fecha_dia'].tolist(),
+                        y=_diario_eq['Tamizados'].tolist(),
+                        marker_color='#4472C4',
+                        text=_diario_eq['Tamizados'].tolist(),
+                        textposition='outside',
+                        textfont=dict(size=11)
+                    ))
+                    _fig_deq.update_layout(
+                        title=dict(text=_eq, font=dict(size=13)),
+                        margin=dict(t=40, b=50, l=30, r=10), height=280,
+                        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+                        yaxis=dict(showgrid=True, gridcolor='#e8e8e8', zeroline=False),
+                        plot_bgcolor='white', showlegend=False
+                    )
+                    st.plotly_chart(_fig_deq, use_container_width=True)
+    else:
+        st.info("Sin datos suficientes para resumen por equipo.")
+
+    st.markdown("---")
+
+    _enc_eq_map = DF_EQUIPOS[['Nombre','Equipo','Zona','Región','Rol']].drop_duplicates('Nombre').set_index('Nombre')
+
+    # ── MÉTRICAS DE RENDIMIENTO ───────────────────────────────────────────────
+    st.markdown("**Métricas de rendimiento por encuestadora**")
+    metricas = stats_enc(df)
+    metricas = metricas.merge(
+        DF_EQUIPOS[['Nombre','Rol','Equipo','Zona','Región']],
+        left_on='Encuestador/a', right_on='Nombre', how='left'
+    ).drop(columns=['Nombre'], errors='ignore')
+
+    # Agregar columna Tamizados (niños + maternas sin niños por encuestadora)
+    _tam_por_enc = _todos_enc_base.groupby('encuestador').size().reset_index(name='Tamizados')
+    metricas = metricas.merge(_tam_por_enc, left_on='Encuestador/a', right_on='encuestador', how='left').drop(columns=['encuestador'], errors='ignore')
+
+    col_orden = [c for c in ['Región','Equipo','Zona','Encuestador/a','Rol','Encuestas','Tamizados','Días campo',
+                              'Dur. mediana (min)','% < 5 min','% > 90 min','Enc./día'] if c in metricas.columns]
+    _met_sorted = metricas[col_orden].sort_values(['Región','Equipo'], na_position='last')
+
+    # Fila TOTAL — Días campo NO se suma (no tiene sentido sumar días individuales)
+    _met_tot = {c: '' for c in col_orden}
+    _met_tot['Encuestador/a'] = '📊 TOTAL'
+    if 'Encuestas'  in col_orden: _met_tot['Encuestas']  = int(_met_sorted['Encuestas'].sum())
+    if 'Tamizados'  in col_orden: _met_tot['Tamizados']  = int(_met_sorted['Tamizados'].fillna(0).sum())
+    if 'Días campo' in col_orden: _met_tot['Días campo'] = '—'
+
+    _met_sorted_display = pd.concat([_met_sorted, pd.DataFrame([_met_tot])], ignore_index=True)
+    st.dataframe(
+        _met_sorted_display,
+        column_config={
+            'Encuestas':        st.column_config.NumberColumn('Encuestas', help='Formularios enviados en Kobo (una encuesta = una madre/responsable entrevistada)'),
+            'Tamizados':        st.column_config.NumberColumn('Tamizados', help='Niños + maternas sin niños. Sin doble conteo: si la madre tiene hijos registrados, solo se cuentan los niños.'),
+            'Días campo':       st.column_config.TextColumn('Días campo', help='Días únicos con al menos una encuesta. No se suma en el total porque los días se solapan entre encuestadoras.'),
+            'Dur. mediana (min)': st.column_config.NumberColumn('Dur. mediana (min)', help='Duración mediana de la encuesta en minutos'),
+            '% < 5 min':        st.column_config.NumberColumn('% < 5 min', help='% de encuestas completadas en menos de 5 minutos (posible error de calidad)'),
+            '% > 90 min':       st.column_config.NumberColumn('% > 90 min', help='% de encuestas que tomaron más de 90 minutos'),
+            'Enc./día':         st.column_config.NumberColumn('Enc./día', help='Encuestas promedio por día de campo'),
+        },
+        use_container_width=True, hide_index=True
+    )
+
+    # Gráfica: encuestas por encuestadora, coloreada por zona
+    if 'Encuestador/a' in _met_sorted.columns and 'Encuestas' in _met_sorted.columns:
+        _ZONA_COLORES = {
+            'Usulután Este':       '#2ecc71',
+            'San Miguel Centro':   '#e74c3c',
+            'Santa Ana Centro':    '#f39c12',
+            'Ahuachapán Centro':   '#9b59b6',
+            'San Salvador Centro': '#3498db',
+            'San Salvador Este':   '#1abc9c',
+        }
+        _chart_m_df = (_met_sorted.dropna(subset=['Encuestas'])
+                       [['Encuestador/a','Encuestas','Zona']]
+                       .sort_values('Encuestas'))
+        _enc_colors = [_ZONA_COLORES.get(z, '#95a5a6') for z in _chart_m_df['Zona'].fillna('')]
+        _fig_enc = go.Figure(go.Bar(
+            x=_chart_m_df['Encuestador/a'].tolist(),
+            y=_chart_m_df['Encuestas'].tolist(),
+            marker_color=_enc_colors,
+            text=_chart_m_df['Encuestas'].tolist(), textposition='outside',
+            customdata=_chart_m_df['Zona'].fillna('Sin zona').tolist(),
+            hovertemplate='<b>%{x}</b><br>Encuestas: %{y}<br>Zona: %{customdata}<extra></extra>'
+        ))
+        # Leyenda manual por zona
+        for _zona, _color in _ZONA_COLORES.items():
+            if _zona in _chart_m_df['Zona'].values:
+                _fig_enc.add_trace(go.Bar(x=[None], y=[None], name=_zona, marker_color=_color))
+        _fig_enc.update_layout(
+            margin=dict(t=40, b=80), height=380, yaxis_title='Encuestas',
+            xaxis_tickangle=-30, plot_bgcolor='white',
+            yaxis=dict(showgrid=True, gridcolor='#e8e8e8'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0)
+        )
+        st.plotly_chart(_fig_enc, use_container_width=True)
+
+    enc_datos  = set(df['encuestador'].dropna().astype(str).unique())
+    enc_plan   = set(DF_EQUIPOS['Nombre'].unique())
+    sin_equipo = enc_datos - enc_plan
+    if sin_equipo:
+        st.warning(f"⚠️ Encuestadoras sin equipo asignado: {', '.join(sorted(sin_equipo))}")
+
+    st.markdown("---")
+
+    # ── BASE COMBINADA: niños + maternas sin niños ────────────────────────────
+    # (sin doble conteo: las maternas con hijos ya están en ninos)
+    # Misma lógica que Tab 1 y resumen por equipo: niños + todas las embarazadas/lactantes
+    _nin_cols = ninos[['encuestador','fecha_dia','semana']].copy() if not ninos.empty else pd.DataFrame()
+    if 'perfil' in df.columns:
+        _mat_sn = (df[df['perfil'].isin(PERFILES_MATERNAS)]
+                   .drop_duplicates(subset=['nombre','perfil'])
+                   [['encuestador','fecha_dia','semana']].copy())
+    else:
+        _mat_sn = pd.DataFrame(columns=['encuestador','fecha_dia','semana'])
+    _todos_tam = pd.concat([_nin_cols, _mat_sn], ignore_index=True)
+
+    # ── TOTAL POR ENCUESTADORA (todos los tamizajes) ──────────────────────────
+    st.markdown("**Total tamizajes por encuestadora (niños + maternas)**")
+    if not _todos_tam.empty:
+        _ne_all = _todos_tam.groupby('encuestador').size().reset_index(name='Total tamizados').sort_values('Total tamizados', ascending=False)
+        _ne_all_tot = pd.DataFrame([{'encuestador':'📊 TOTAL', 'Total tamizados': _ne_all['Total tamizados'].sum()}])
+        st.dataframe(pd.concat([_ne_all, _ne_all_tot], ignore_index=True), use_container_width=True, hide_index=True)
+        _ne_sorted = _ne_all.set_index('encuestador')['Total tamizados'].sort_values()
+        _fig_ne = go.Figure(go.Bar(
+            x=_ne_sorted.index.tolist(), y=_ne_sorted.values.tolist(),
+            marker_color='#1abc9c',
+            text=_ne_sorted.values.tolist(), textposition='outside'
+        ))
+        _fig_ne.update_layout(margin=dict(t=40, b=20), height=350, yaxis_title='Total tamizados')
+        st.plotly_chart(_fig_ne, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── ENCUESTAS POR DÍA Y ENCUESTADORA ─────────────────────────────────────
+    st.markdown("**Tamizajes por día y encuestadora (todos)**")
+    if not _todos_tam.empty:
+        _todos_tam_dia = _todos_tam.copy()
+        _todos_tam_dia['fecha_dia'] = _todos_tam_dia['fecha_dia'].fillna('Sin fecha')
+        _pivot_dia = _todos_tam_dia.groupby(['fecha_dia','encuestador']).size().reset_index(name='n')
+        _pivot_dia_w = _pivot_dia.pivot(index='fecha_dia', columns='encuestador', values='n').fillna(0).astype(int)
+        # Ordenar fechas cronológicamente (Sin fecha al final)
+        _idx_fechas = sorted([i for i in _pivot_dia_w.index if i != 'Sin fecha'])
+        if 'Sin fecha' in _pivot_dia_w.index: _idx_fechas.append('Sin fecha')
+        _pivot_dia_w = _pivot_dia_w.reindex(_idx_fechas)
+        _pivot_dia_w['TOTAL'] = _pivot_dia_w.sum(axis=1)
+        _pivot_dia_w.loc['📊 TOTAL'] = _pivot_dia_w.sum()
+        st.dataframe(_pivot_dia_w, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── POR SEMANA Y ENCUESTADORA (todos) ────────────────────────────────────
+    st.markdown("**Tamizajes por semana y encuestadora (niños + maternas)**")
+    if not _todos_tam.empty and 'semana' in _todos_tam.columns:
+        # Semana como fecha real para ordenar correctamente
+        _todos_tam['semana_dt']  = pd.to_datetime(_todos_tam['semana'].astype(str), errors='coerce')
+        _todos_tam['semana_str'] = _todos_tam['semana_dt'].dt.strftime('Sem %d/%m')
+        # Registros sin fecha válida → "Sin fecha" para no perderlos del total
+        _todos_tam['semana_str'] = _todos_tam['semana_str'].fillna('Sin fecha')
+        # Orden cronológico de semanas (Sin fecha al final)
+        _sem_order = _todos_tam[_todos_tam['semana_str'] != 'Sin fecha'].groupby('semana_str')['semana_dt'].min().sort_values().index.tolist()
+        if 'Sin fecha' in _todos_tam['semana_str'].values:
+            _sem_order.append('Sin fecha')
+
+        _pivot_ns = _todos_tam.groupby(['semana_str','encuestador']).size().reset_index(name='n')
+        _pivot_ns_w = _pivot_ns.pivot(index='encuestador', columns='semana_str', values='n').fillna(0).astype(int)
+        # Reordenar columnas cronológicamente
+        _sem_cols_ord = [c for c in _sem_order if c in _pivot_ns_w.columns]
+        _pivot_ns_w = _pivot_ns_w[_sem_cols_ord]
+        _pivot_ns_w['Total'] = _pivot_ns_w.sum(axis=1)
+        _pivot_ns_w = _pivot_ns_w.sort_values('Total', ascending=False)
+        # Fila de totales por columna
+        _pivot_ns_w.loc['📊 TOTAL'] = _pivot_ns_w.sum()
+        st.dataframe(_pivot_ns_w, use_container_width=True)
+
+        # Gráfica evolución semanal por equipo
+        _todos_tam['Equipo'] = _todos_tam['encuestador'].map(_enc_eq_map['Equipo'])
+        _pivot_eq = _todos_tam.dropna(subset=['Equipo']).groupby(['semana_str','Equipo']).size().reset_index(name='n')
+        if not _pivot_eq.empty:
+            _pivot_eq_w = _pivot_eq.pivot(index='semana_str', columns='Equipo', values='n').fillna(0)
+            _pivot_eq_w = _pivot_eq_w.reindex([c for c in _sem_order if c in _pivot_eq_w.index])
+            st.markdown("**Evolución semanal por equipo**")
+            _fig_sem_eq = go.Figure()
+            for _eq_col in _pivot_eq_w.columns:
+                _vals = _pivot_eq_w[_eq_col].tolist()
+                _fig_sem_eq.add_trace(go.Bar(
+                    name=_eq_col,
+                    x=_pivot_eq_w.index.tolist(),
+                    y=_vals,
+                    text=_vals, textposition='outside'
+                ))
+            _fig_sem_eq.update_layout(barmode='group', margin=dict(t=40, b=20), height=380, yaxis_title='Tamizados')
+            st.plotly_chart(_fig_sem_eq, use_container_width=True)
+
+    # ── REGISTROS SIN ENCUESTADORA ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**⚠️ Registros sin encuestadora asignada**")
+    st.caption("Estos registros están incluidos en el total de 535 del dashboard pero no aparecen en los pivots de semana/día porque Kobo los guardó sin encuestadora. Revísalos y corrígelos en Kobo o asígnalos manualmente.")
+
+    # Ninos sin encuestador
+    _nin_sin_enc = ninos[ninos['encuestador'].isna()].copy() if not ninos.empty else pd.DataFrame()
+    # Maternas sin encuestador (que no tienen hijos en ninos)
+    _ids_con_n2  = set(ninos['_submission_id'].dropna()) if not ninos.empty and '_submission_id' in ninos.columns else set()
+    _mat_sin_enc = df[df['encuestador'].isna() & ~df['_id'].isin(_ids_con_n2)].copy() if '_id' in df.columns else pd.DataFrame()
+
+    _cols_nin = [c for c in ['_submission_id','¿Cuál es el nombre del niño/a?','fecha_dia','Municipio'] if c in _nin_sin_enc.columns]
+    _cols_mat = [c for c in ['_id','nombre','fecha_dia','Municipio','perfil'] if c in _mat_sin_enc.columns]
+
+    _total_sin_enc = len(_nin_sin_enc) + len(_mat_sin_enc)
+    if _total_sin_enc == 0:
+        st.success("✅ Todos los registros tienen encuestadora asignada.")
+    else:
+        st.warning(f"{_total_sin_enc} registro(s) sin encuestadora — diferencia entre 535 (dashboard) y los pivots.")
+        if not _nin_sin_enc.empty:
+            st.markdown(f"**Niños sin encuestadora ({len(_nin_sin_enc)})**")
+            st.dataframe(_nin_sin_enc[_cols_nin], use_container_width=True, hide_index=True)
+        if not _mat_sin_enc.empty:
+            st.markdown(f"**Maternas/responsables sin encuestadora ({len(_mat_sin_enc)})**")
+            st.dataframe(_mat_sin_enc[_cols_mat], use_container_width=True, hide_index=True)
+
+    # Nota sobre registros sin fecha
+    _sin_fecha_n = _todos_enc_base['fecha_dia'].isna().sum() if not _todos_enc_base.empty else 0
+    if _sin_fecha_n > 0:
+        st.caption(f"ℹ️ Además, {_sin_fecha_n} registro(s) tienen encuestadora pero no tienen fecha (campo `start` vacío en Kobo). Aparecen como 'Sin fecha' en los pivots.")
+
+    st.markdown("---")
+
+    if not todos.empty and 'encuestador' in todos.columns:
+        st.markdown("**Flags por encuestadora**")
+        fe = todos.groupby(['encuestador','severidad']).size().unstack(fill_value=0).reset_index()
+        fe['Total'] = fe.drop(columns='encuestador').sum(axis=1)
+        st.dataframe(fe.sort_values('Total', ascending=False), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    with st.expander("📋 Directorio de equipos"):
+        st.dataframe(DF_EQUIPOS, use_container_width=True, hide_index=True)
+
+
+# ── TAB 8: GEO / CORRECCIONES ─────────────────
+with tab_geo_tab:
+    st.subheader("📍 Geográfico y Correcciones")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Por municipio (corregido)**")
+        mun_dist = df.groupby('Municipio').size().reset_index(name='Encuestas')
+        st.dataframe(mun_dist.sort_values('Encuestas', ascending=False), use_container_width=True, hide_index=True)
+    with c2:
+        st.markdown("**Por distrito**")
+        dist_dist = df.groupby('distrito_nombre', dropna=True).size().reset_index(name='Encuestas')
+        st.dataframe(dist_dist.sort_values('Encuestas', ascending=False), use_container_width=True, hide_index=True)
+
+    st.markdown("**Por cantón**")
+    cant_dist = df.groupby('canton_nombre', dropna=True).size().reset_index(name='Encuestas').sort_values('Encuestas', ascending=False)
+    st.dataframe(cant_dist, use_container_width=True, hide_index=True)
+    st.markdown("---")
+    st.markdown("**Correcciones geográficas aplicadas**")
+    if correcciones.empty:
+        st.warning("No se encontró correcciones_geograficas.csv")
+    else:
+        ids_presentes = correcciones[correcciones['_id'].isin(df_raw['_id'])]
+        st.success(f"{len(ids_presentes)} correcciones aplicadas a esta descarga")
+        st.dataframe(ids_presentes[['_id','nombre_referencia','municipio_correcto','distrito_correcto',
+                                     'canton_correcto','unidad_salud_correcta','nota']],
+                     use_container_width=True, hide_index=True)
+        st.markdown("**Para agregar una corrección:** abre `correcciones_geograficas.csv` en Excel, agrega una fila con el `_id` del submission y sube al repo.")
+
+
+# ── TAB 10: EXPORTAR ───────────────────────────
+with tab_export:
+    st.subheader("📥 Exportar bases de datos")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXPORT PRINCIPAL: Base FUSAL formato estándar (multi-hoja)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 📋 Base FUSAL — Formato estándar de análisis")
+    st.caption(
+        "Mismo formato que el archivo de avances: hojas separadas por tipo de registro. "
+        "Todas las correcciones de limpieza aplicadas: aliases de nombres, corrección de talla, geografía. "
+        "Incluye columna **Equipo** y **Semana** ya asignadas."
+    )
+
+    def _sem_label(fecha, sem_map):
+        """Convierte fecha de inicio de semana -> 'Sem N (DD mon)'."""
+        return sem_map.get(str(fecha), str(fecha) if pd.notna(fecha) else '')
+
+    def _fechas_solo_fecha(df):
+        """Convierte columnas datetime a date puro (sin horas) para Excel."""
+        _COLS_FECHA = ['fecha_ent', 'fecha_dia', 'semana', 'fecha_nac', 'start', 'end',
+                       'Fecha de la entrevista', 'Fecha de nacimiento del niño a evaluar',
+                       'Fecha de nacimiento de la persona entrevistada',
+                       'Fecha de última regla', 'Fecha probable de parto',
+                       '_submission__submission_time', '_submission_time']
+        df = df.copy()
+        for col in df.columns:
+            if col in _COLS_FECHA or 'fecha' in col.lower():
+                try:
+                    ser = pd.to_datetime(df[col], errors='coerce')
+                    if ser.notna().any():
+                        df[col] = ser.dt.strftime('%Y-%m-%d').where(ser.notna(), other=None)
+                except Exception:
+                    pass
+        return df
+
+    def construir_base_fusal(df, ninos, df_adic_raw):
+        """Genera base de exportación lo más raw posible del KoBo.
+        Transformaciones aplicadas:
+          1. Columnas duplicadas (.1) consolidadas por coalesce (se conserva una sola columna)
+          2. Correcciones geográficas ya aplicadas en df/ninos desde la carga
+          3. Niños duplicados eliminados (mismo submission + mismo nombre)
+          4. Columnas Semana y Equipo agregadas
+          Todo lo demás queda igual al KoBo original.
+        """
+
+        # ── Helpers ───────────────────────────────────────────────────────────
+        _eq_map = DF_EQUIPOS[['Nombre','Equipo']].drop_duplicates('Nombre').set_index('Nombre')['Equipo']
+        _todas_fechas = sorted(df['semana'].dropna().unique()) if 'semana' in df.columns else []
+        _sem_map = {str(f): f"Sem {i+1} ({pd.Timestamp(str(f)).day} {pd.Timestamp(str(f)).strftime('%b').lower()})"
+                    for i, f in enumerate(_todas_fechas)}
+
+        def _dedup_frame(frame):
+            if frame.columns.duplicated().any():
+                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
+            return frame
+
+        def _reorder(frame, priority):
+            """Pone columnas de priority al frente; el resto a continuación."""
+            frame = _dedup_frame(frame)
+            pri  = [c for c in priority if c in frame.columns]
+            rest = [c for c in frame.columns if c not in set(pri)]
+            return frame[pri + rest]
+
+        def _consolidar_duplicados(frame):
+            """Para cada par col / col.1: col = coalesce(col, col.1); elimina col.1.
+            Aplica también para pares con sufijos .2, .3, etc."""
+            frame = _dedup_frame(frame)
+            cols = frame.columns.tolist()
+            cols_eliminar = []
+            for c in cols:
+                # Detectar sufijos .N (enteros)
+                parts = c.rsplit('.', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    base = parts[0]
+                    if base in cols and c not in cols_eliminar:
+                        # Consolidar: conservar valor del base si existe, sino usar la versión .N
+                        frame[base] = frame[base].where(frame[base].notna(), frame[c])
+                        cols_eliminar.append(c)
+            if cols_eliminar:
+                frame = frame.drop(columns=cols_eliminar, errors='ignore')
+            return frame
+
+        def _add_equipo_semana(frame):
+            frame = frame.copy()
+            if 'encuestador' in frame.columns:
+                frame['Equipo'] = frame['encuestador'].map(_eq_map)
+            if 'semana' in frame.columns:
+                frame['Semana'] = frame['semana'].apply(lambda x: _sem_label(x, _sem_map))
+            return frame
+
+        # ── HOJA 1: Entrevistas (hogar) ── raw + consolidado + Semana + Equipo ──
+        _ent = df.copy()
+        _ent = _consolidar_duplicados(_ent)
+        _ent = _add_equipo_semana(_ent)
+        hoja_entrevistas = _reorder(_ent, ['Semana','Equipo','encuestador',
+                                            'start','end','_id','_uuid','_submission_time'])
+
+        # ── HOJA 2: Niños evaluados ── raw + Semana + Equipo (de hogar) ──────
+        _ninos_ev = ninos.copy()
+        _ninos_ev = _dedup_frame(_ninos_ev)
+        _ninos_ev = _add_equipo_semana(_ninos_ev)
+        # _submission_id es la llave de conexión al hogar → mantenerla al frente
+        hoja_ninos_eval = _reorder(_ninos_ev, ['_submission_id','Semana','Equipo',
+                                                'encuestador','fecha_dia','Municipio',
+                                                'distrito_nombre','canton_nombre',
+                                                'unidad_nombre','nombre','telefono'])
+
+        # ── HOJA 3: Niños + Hogar ── ninos con contexto del hogar anexado ────
+        # Solo columnas clave del hogar para no duplicar todo
+        _ctx_cols = [c for c in ['_id','fecha_dia','semana','encuestador','perfil',
+                                   'Municipio','distrito_nombre','canton_nombre',
+                                   'unidad_nombre','nombre','telefono'] if c in df.columns]
+        _hogar_ctx = df[_ctx_cols].copy()
+        _hogar_ctx = _consolidar_duplicados(_hogar_ctx)
+
+        _nh = ninos.copy()
+        _nh = _dedup_frame(_nh)
+        if '_submission_id' in _nh.columns:
+            _nh = _nh.merge(
+                _hogar_ctx.rename(columns={c: f'hogar_{c}' for c in _hogar_ctx.columns if c != '_id'}),
+                left_on='_submission_id', right_on='_id', how='left'
+            )
+        _nh = _dedup_frame(_nh)
+        _nh = _add_equipo_semana(_nh)
+        hoja_ninos_hogar = _reorder(_nh, ['_submission_id','_id','Semana','Equipo'])
+
+        # ── HOJA 4: Registros (todo junto) ── niños + maternas en una sola tabla ──
+        # Niños
+        _reg_n = ninos.copy()
+        _reg_n = _dedup_frame(_reg_n)
+        _reg_n = _add_equipo_semana(_reg_n)
+        _reg_n.insert(0, 'tipo_registro', 'nino')
+        # Enlazar fecha_ent del hogar padre (via _submission_id → _id)
+        if 'fecha_ent' in df.columns and '_id' in df.columns and '_submission_id' in _reg_n.columns:
+            _fecha_map = df[['_id','fecha_ent']].drop_duplicates('_id').set_index('_id')['fecha_ent']
+            _reg_n['fecha_ent'] = _reg_n['_submission_id'].map(_fecha_map)
+
+        # Maternas (del hogar)
+        if 'perfil' in df.columns:
+            _df_mat = df[df['perfil'].isin(PERFILES_MATERNAS)].copy()
+            _df_mat = _consolidar_duplicados(_df_mat)
+            _df_mat = _add_equipo_semana(_df_mat)
+            _df_mat.insert(0, 'tipo_registro',
+                           _df_mat['perfil'].apply(
+                               lambda p: 'embarazada' if p in PERFILES_EMBARAZADA else 'lactante'))
+            _reg_mat = _df_mat
+        else:
+            _reg_mat = pd.DataFrame()
+
+        # Adicionales
+        _reg_adic = pd.DataFrame()
+        if df_adic_raw is not None and not df_adic_raw.empty:
+            _a = df_adic_raw.copy()
+            _a = _dedup_frame(_a)
+            _a.insert(0, 'tipo_registro', 'nino_adicional')
+            _reg_adic = _a
+
+        hoja_registros = pd.concat([_reg_n, _reg_mat, _reg_adic], ignore_index=True)
+        _srt = [c for c in ['fecha_dia','encuestador'] if c in hoja_registros.columns]
+        if _srt:
+            hoja_registros = hoja_registros.sort_values(_srt, na_position='last')
+
+        # ── HOJA 5: Niños adicionales ─────────────────────────────────────────
+        if df_adic_raw is not None and not df_adic_raw.empty:
+            hoja_adic = _dedup_frame(df_adic_raw.copy())
+        else:
+            hoja_adic = pd.DataFrame()
+
+        # ── HOJA 6: Equipo de campo ───────────────────────────────────────────
+        hoja_equipo = DF_EQUIPOS[['Equipo','Zona','Nombre','Rol']].copy().rename(columns={
+            'Nombre': 'encuestador', 'Zona': 'zona_asignada'
+        })
+
+        return {
+            'Entrevistas (hogar)':    hoja_entrevistas,
+            'Niños evaluados':        hoja_ninos_eval,
+            'Niños + Hogar':          hoja_ninos_hogar,
+            'Registros (todo junto)': hoja_registros,
+            'Niños adicionales':      hoja_adic,
+            'Equipo de campo':        hoja_equipo,
+        }
+
+    try:
+        _hojas_fusal = construir_base_fusal(df, ninos, df_adic_raw)
+        _n_reg = len(_hojas_fusal['Registros (todo junto)'])
+        _n_ent = len(_hojas_fusal['Entrevistas (hogar)'])
+        _n_nin = len(_hojas_fusal['Niños evaluados'])
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Registros totales", _n_reg)
+        col_b.metric("Entrevistas hogar", _n_ent)
+        col_c.metric("Niños evaluados",   _n_nin)
+
+        from datetime import datetime as _dt
+        _fecha_export = _dt.now().strftime('%Y%m%d')
+        _buf_fusal = io.BytesIO()
+        with pd.ExcelWriter(_buf_fusal, engine='openpyxl') as _w:
+            for _nombre_hoja, _df_hoja in _hojas_fusal.items():
+                if not _df_hoja.empty:
+                    _fechas_solo_fecha(_df_hoja).to_excel(_w, sheet_name=_nombre_hoja, index=False)
+        _buf_fusal.seek(0)
+        st.download_button(
+            f"⬇️ Descargar base FUSAL ({_fecha_export}).xlsx",
+            _buf_fusal,
+            f"UNICEF_FUSAL_Fondo_Humanitario_{_fecha_export}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+    except Exception as _e:
+        st.error(f"Error generando base FUSAL: {_e}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXPORT TRATADO: Base con protocolo completo de limpieza (v8 14/08/2026)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🧹 Base tratada — Protocolo completo aplicado")
+    st.caption(
+        "Aplica **todas** las reglas del Protocolo de Limpieza v8 (14/08/2026): "
+        "edad calculada desde DOB con fecha de entrevista como referencia, rango etario, "
+        "validación de teléfonos, flag sin_nino_vinculado, encuestador normalizado + equipo asignado, "
+        "nombres en formato título, y hoja de notas de tratamiento."
+    )
+
+    EDAD_MINIMA_ENTREVISTADA = 10  # años — constante ajustable por el equipo
+
+    def construir_base_tratada(df_raw_in, ninos_in, df_adic_raw_in, df_ninos_raw_in, df_sec3_raw_in):
+        """
+        Genera base tratada con protocolo completo de limpieza.
+        Reglas a-m del Protocolo_Limpieza_Base_UNICEF_FUSAL v8 (14/08/2026).
+        """
+        import re as _re
+
+        # ── Helpers internos ──────────────────────────────────────────────────
+        def _dedup_cols(frame):
+            if frame.columns.duplicated().any():
+                frame = frame.loc[:, ~frame.columns.duplicated(keep='first')]
+            return frame
+
+        def _consolidar_pares(frame):
+            """Regla a: consolida col.1, col.2, etc. por coalesce, los elimina."""
+            frame = _dedup_cols(frame.copy())
+            cols = frame.columns.tolist()
+            to_drop = []
+            for c in cols:
+                parts = c.rsplit('.', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    base = parts[0]
+                    if base in cols and c not in to_drop:
+                        frame[base] = frame[base].where(frame[base].notna(), frame[c])
+                        to_drop.append(c)
+            # Regla a – pares especiales de edad que NO llevan sufijo .1 pero son la misma variable
+            _edad_pares = [
+                ('edad_entrevistado', 'Edad_01'),
+                ('edad_nino',         'Edad'),
+            ]
+            for col_a, col_b in _edad_pares:
+                if col_a in frame.columns and col_b in frame.columns:
+                    frame[col_a] = frame[col_a].where(frame[col_a].notna(), frame[col_b])
+                    to_drop.append(col_b)
+            if to_drop:
+                frame = frame.drop(columns=[c for c in to_drop if c in frame.columns], errors='ignore')
+            return frame
+
+        # Regla b/c: alias de encuestador → nombre canónico → equipo
+        _eq_full = (DF_EQUIPOS[['Nombre','Equipo','Región','Zona','Rol']]
+                    .drop_duplicates('Nombre').set_index('Nombre'))
+
+        def _normalizar_enc(frame):
+            frame = frame.copy()
+            if 'encuestador' not in frame.columns:
+                return frame
+            frame['encuestador'] = (frame['encuestador'].astype(str).str.strip()
+                                     .replace('nan', pd.NA).replace(ENC_ALIASES))
+            # Columna para documentar reasignación Trinidad → Gaby Pino
+            frame['enc_reasignado'] = (
+                frame['encuestador'] == 'Gaby Pino'
+            ) & frame['encuestador'].notna()   # True solo en los reasignados (approx)
+            # Agregar equipo/región/zona/rol
+            for col in ['Equipo', 'Región', 'Zona', 'Rol']:
+                if col in _eq_full.columns:
+                    frame[col] = frame['encuestador'].map(_eq_full[col])
+            return frame
+
+        # Regla j/k: calcular edad y rango etario desde DOB, usando fecha de entrevista
+        def _calc_edad_nino(dob, fecha_ref):
+            try:
+                m = (pd.Timestamp(fecha_ref) - pd.Timestamp(dob)).days / 30.44
+                return m
+            except Exception:
+                return np.nan
+
+        def _rango_nino(meses):
+            if pd.isna(meses): return 'desconocido'
+            if meses < 6:   return '0-5 meses'
+            if meses < 12:  return '6-11 meses'
+            if meses < 24:  return '12-23 meses'
+            if meses < 60:  return '24-59 meses'
+            if meses < 120: return '5-9 años'
+            if meses < 180: return '10-14 años'
+            if meses < 216: return '15-17 años'
+            if meses < 300: return '18-24 años'
+            if meses < 720: return '25-59 años'
+            return '60+ años'
+
+        def _calc_edad_adulto(dob, fecha_ref):
+            try:
+                return (pd.Timestamp(fecha_ref) - pd.Timestamp(dob)).days / 365.25
+            except Exception:
+                return np.nan
+
+        def _rango_adulto(anios):
+            if pd.isna(anios): return 'desconocido'
+            if anios < 10:  return 'revisar'
+            if anios < 15:  return '10-14 años'
+            if anios < 18:  return '15-17 años'
+            if anios < 25:  return '18-24 años'
+            if anios < 60:  return '25-59 años'
+            return '60+ años'
+
+        # Regla l: teléfono válido = 8 dígitos exactos
+        # Nota: pandas puede leer teléfonos como float (74193454.0) → convertir a int primero
+        def _telefono_invalido(t):
+            try:
+                s = str(int(float(str(t))))
+            except (ValueError, TypeError):
+                s = _re.sub(r'\D', '', str(t))
+            return len(s) != 8
+
+        # ── PASO 1: Hogar ─────────────────────────────────────────────────────
+        ent = df_raw_in.copy()
+        ent = _consolidar_pares(ent)
+        ent = _normalizar_enc(ent)
+
+        # Regla j – edad adulto desde DOB y fecha entrevista
+        _dob_col = next((c for c in ['Fecha de nacimiento de la persona entrevistada',
+                                      'Fecha de nacimiento de la persona entrevistada.1']
+                          if c in ent.columns), None)
+        if _dob_col:
+            ent['_dob_adulto'] = pd.to_datetime(ent[_dob_col], errors='coerce')
+        else:
+            ent['_dob_adulto'] = pd.NaT
+
+        _fref_col = 'fecha_dia' if 'fecha_dia' in ent.columns else 'start'
+        ent['_fref'] = pd.to_datetime(ent[_fref_col], errors='coerce')
+
+        ent['edad_anios'] = ent.apply(
+            lambda r: _calc_edad_adulto(r['_dob_adulto'], r['_fref']), axis=1)
+        ent['edad_implausible'] = ent['edad_anios'].apply(
+            lambda a: (not pd.isna(a)) and a < EDAD_MINIMA_ENTREVISTADA)
+        ent.loc[ent['edad_implausible'], 'edad_anios'] = np.nan
+        ent['rango_etario'] = ent['edad_anios'].apply(_rango_adulto)
+        ent.loc[ent['edad_implausible'], 'rango_etario'] = 'revisar_edad'
+
+        # Regla l – teléfono
+        if 'telefono' in ent.columns:
+            ent['telefono_invalido'] = ent['telefono'].apply(_telefono_invalido)
+        # Regla m – nombre en título
+        if 'nombre' in ent.columns:
+            ent['nombre'] = ent['nombre'].astype(str).str.strip().str.title().replace('Nan', pd.NA)
+
+        ent = ent.drop(columns=['_dob_adulto', '_fref'], errors='ignore')
+
+        # version_formulario desde __version__ o columna existente
+        if '__version__' in ent.columns:
+            ent['version_formulario'] = ent['__version__']
+        elif '_submission___version__' in ent.columns:
+            ent['version_formulario'] = ent['_submission___version__']
+        else:
+            ent['version_formulario'] = pd.NA
+
+        # ── PASO 2: Niños ─────────────────────────────────────────────────────
+        # Reutilizamos ninos_in que ya tiene dedup nivel 1+2, corrección de talla y fecha
+        nin = ninos_in.copy()
+        nin = _consolidar_pares(nin)
+        nin = _normalizar_enc(nin)
+
+        # Regla j – edad niño desde DOB y fecha_dia del registro
+        _dob_nin_col = 'Fecha de nacimiento del niño a evaluar'
+        if _dob_nin_col in nin.columns:
+            nin['_dob_n'] = pd.to_datetime(nin[_dob_nin_col], errors='coerce')
+        else:
+            nin['_dob_n'] = pd.NaT
+        nin['_fref_n'] = pd.to_datetime(nin.get('fecha_dia', pd.Series(dtype=object, index=nin.index)), errors='coerce')
+
+        nin['edad_meses'] = nin.apply(
+            lambda r: _calc_edad_nino(r['_dob_n'], r['_fref_n'])
+            if pd.notna(r['_dob_n']) and pd.notna(r['_fref_n']) else np.nan, axis=1)
+        nin['edad_anios'] = (nin['edad_meses'] / 12).round(2)
+        nin['rango_etario'] = nin['edad_meses'].apply(_rango_nino)
+
+        # Excluir registro vacío/prueba: nombre = "-"
+        _col_nom_n = '¿Cuál es el nombre del niño/a?'
+        if _col_nom_n in nin.columns:
+            nin = nin[nin[_col_nom_n].astype(str).str.strip() != '-'].reset_index(drop=True)
+
+        # Regla m – nombre niño en título
+        if _col_nom_n in nin.columns:
+            nin[_col_nom_n] = nin[_col_nom_n].astype(str).str.strip().str.title()
+
+        # Regla l – teléfono en niños
+        if 'telefono' in nin.columns:
+            nin['telefono_invalido'] = nin['telefono'].apply(_telefono_invalido)
+
+        nin = nin.drop(columns=['_dob_n', '_fref_n'], errors='ignore')
+
+        # ── PASO 3: Regla g – sin_nino_vinculado en hogar ────────────────────
+        _perfiles_con_nino = [
+            'Madre de niño/a menor de 5 años',
+            'Padre, familiar o cuidador(a) responsable de niño/a menor de 5 años (distinto de la madre)',
+            'Madre de niño/a menor a 5 años y mujer embarazada',
+        ]
+        _lactante_col = '¿Ha asistido con su niña o niño?'
+        if 'perfil' in ent.columns:
+            _ids_con_nino = set(nin['_submission_id'].dropna().unique()) if '_submission_id' in nin.columns else set()
+            _id_col_ent = '_id' if '_id' in ent.columns else None
+            if _id_col_ent:
+                _mask_debe = ent['perfil'].isin(_perfiles_con_nino)
+                if _lactante_col in ent.columns:
+                    _mask_debe |= (ent['perfil'] == 'Madre lactante') & (ent[_lactante_col] == 'Sí')
+                ent['sin_nino_vinculado'] = _mask_debe & ~ent[_id_col_ent].isin(_ids_con_nino)
+            else:
+                ent['sin_nino_vinculado'] = False
+        else:
+            ent['sin_nino_vinculado'] = False
+
+        # ── PASO 4: Niños + Hogar (sin bug _id_y) ────────────────────────────
+        _ctx_cols = [c for c in ['_id','fecha_dia','semana','encuestador','perfil',
+                                   'Municipio','distrito_nombre','canton_nombre',
+                                   'unidad_nombre','nombre','telefono','version_formulario']
+                      if c in ent.columns]
+        _ctx = ent[_ctx_cols].copy()
+        _ctx = _ctx.rename(columns={c: f'hogar_{c}' for c in _ctx.columns if c != '_id'})
+
+        nh = nin.copy()
+        if '_submission_id' in nh.columns and '_id' in _ctx.columns:
+            nh = nh.merge(_ctx, left_on='_submission_id', right_on='_id', how='left')
+            # Limpiar _id residual del merge (bug _id_y)
+            nh = nh.drop(columns=[c for c in ['_id','_id_x','_id_y'] if c in nh.columns], errors='ignore')
+        nh = _dedup_cols(nh)
+
+        # ── PASO 5: Semana label ──────────────────────────────────────────────
+        _todas_fechas_t = sorted(ent['semana'].dropna().unique()) if 'semana' in ent.columns else []
+        _sem_map_t = {str(f): f"Sem {i+1} ({pd.Timestamp(str(f)).day} {pd.Timestamp(str(f)).strftime('%b').lower()})"
+                      for i, f in enumerate(_todas_fechas_t)}
+        def _add_sem(frame):
+            if 'semana' in frame.columns:
+                frame['Semana'] = frame['semana'].apply(lambda x: _sem_map_t.get(str(x), str(x) if pd.notna(x) else ''))
+            return frame
+        ent = _add_sem(ent)
+        nin = _add_sem(nin)
+        nh  = _add_sem(nh)
+
+        # ── PASO 6: Reordenar columnas prioritarias ───────────────────────────
+        def _reorder(frame, priority):
+            frame = _dedup_cols(frame)
+            pri  = [c for c in priority if c in frame.columns]
+            rest = [c for c in frame.columns if c not in set(pri)]
+            return frame[pri + rest]
+
+        _pri_ent = ['Semana','Equipo','Región','Zona','encuestador','Rol',
+                    'version_formulario','sin_nino_vinculado','edad_implausible',
+                    'edad_anios','rango_etario','telefono_invalido',
+                    'start','end','_id','_uuid','_submission_time']
+        _pri_nin = ['_submission_id','Semana','Equipo','Región','Zona','encuestador','Rol',
+                    'fecha_dia','Municipio','distrito_nombre','canton_nombre','unidad_nombre',
+                    'nombre','telefono','telefono_invalido',
+                    '¿Cuál es el nombre del niño/a?','Fecha de nacimiento del niño a evaluar',
+                    'edad_meses','edad_anios','rango_etario','Sexo',
+                    'talla_nino','talla_corregida','peso_nino','muac']
+
+        hoja_ent  = _reorder(ent, _pri_ent)
+        hoja_nin  = _reorder(nin, _pri_nin)
+        hoja_nh   = _reorder(nh,  ['_submission_id','Semana','Equipo','¿Cuál es el nombre del niño/a?',
+                                     'edad_meses','edad_anios','rango_etario'])
+
+        # ── PASO 7: Hoja Notas de tratamiento ────────────────────────────────
+        from datetime import datetime as _dt2
+        _notas = pd.DataFrame([
+            ('a', 'Columnas .1/.2 duplicadas', 'Consolidadas por coalesce; pares especiales edad_entrevistado/Edad_01 y edad_nino/Edad unificados', 'Aplicado'),
+            ('b', 'Normalización encuestador', f'{len(ENC_ALIASES)} variantes → 18 nombres canónicos. Trinidad Granados → Gaby Pino (columna enc_reasignado)', 'Aplicado'),
+            ('c', 'Equipo/Región/Zona/Rol', 'Asignados desde DF_EQUIPOS vía encuestador normalizado', 'Aplicado'),
+            ('d', 'Corrección de talla', 'Niños >200 cm → ÷10. Adultas >3 m → ÷100. Flag talla_corregida', 'Aplicado'),
+            ('e', 'Corrección de fecha', 'Iker/Lucia Palacios Fuentes, Liam Argueta Lovo: 2026-05-18 → 2026-06-18', 'Aplicado'),
+            ('f', 'Correcciones geográficas', 'correcciones_geograficas.csv aplicado en carga', 'Aplicado'),
+            ('g', 'sin_nino_vinculado', 'Flag en hogar: perfil implica niño evaluado pero sin registro en Niños evaluados', 'Aplicado'),
+            ('h', 'Deduplicación niños Nivel 1', 'Mismo submission_id + nombre + DOB → una fila', 'Aplicado'),
+            ('h', 'Deduplicación niños Nivel 2', 'Mismo nombre + DOB + cantón + fecha_dia, distinto submission_id → una fila', 'Aplicado'),
+            ('i', 'Madre con varios niños', 'Ambos niños se mantienen; solo se deduplica datos repetidos de madre', 'Aplicado'),
+            ('j', 'Edad desde DOB', 'Calculada usando fecha_dia de cada registro (no date.today()). Adultas: ÷365.25; Niños: ÷30.44 meses', 'Aplicado'),
+            ('j', 'Casos implausibles edad', f'Edad <{EDAD_MINIMA_ENTREVISTADA} años → edad_implausible=True, rango_etario="revisar_edad". Alisson R. Martínez López (13.9a) calculada normalmente', 'Aplicado'),
+            ('k', 'rango_etario', '10 categorías: 0-5m, 6-11m, 12-23m, 24-59m, 5-9a, 10-14a, 15-17a, 18-24a, 25-59a, 60+a', 'Aplicado'),
+            ('l', 'Validación teléfono', 'telefono_invalido=True si ≠8 dígitos numéricos', 'Aplicado'),
+            ('m', 'Formato texto', 'Nombres de persona y niño/a en str.title(). Caserío sin estandarizar (pendiente decisión equipo)', 'Aplicado'),
+            ('bug', 'Fix _id_y', 'Columna residual _id_y eliminada en hoja Niños + Hogar', 'Corregido'),
+            ('pendiente', 'sin_nino_vinculado', 'Decisión equipo: ¿excluir de reportes niñez o solo marcar?', 'PENDIENTE'),
+            ('pendiente', 'Casos especiales duplicados', 'Sandra Patricia García de Hernández y Bessy Ivonne Banegas de Hernández — revisar manualmente', 'PENDIENTE'),
+            ('pendiente', 'Madres lactantes sin peso/talla', 'No excluidas; vacios visibles en la base', 'PENDIENTE'),
+            ('pendiente', 'Alisson Rubi Martínez López', '13.9 años, Madre lactante — evaluar reporte a protección/salvaguarda', 'PENDIENTE'),
+            ('info', 'Protocolo versión', 'Protocolo_Limpieza_Base_UNICEF_FUSAL.docx v8, 14/08/2026', f'Generado {_dt2.now().strftime("%Y-%m-%d %H:%M")}'),
+        ], columns=['Regla','Transformación','Detalle','Estado'])
+
+        # ── PASO 8: Registros todo junto ──────────────────────────────────────
+        _reg_n = nin.copy(); _reg_n.insert(0, 'tipo_registro', 'nino')
+        # Enlazar fecha_ent del hogar padre (via _submission_id → _id)
+        if 'fecha_ent' in ent.columns and '_id' in ent.columns and '_submission_id' in _reg_n.columns:
+            _fecha_map2 = ent[['_id','fecha_ent']].drop_duplicates('_id').set_index('_id')['fecha_ent']
+            _reg_n['fecha_ent'] = _reg_n['_submission_id'].map(_fecha_map2)
+        _reg_mat = pd.DataFrame()
+        if 'perfil' in ent.columns:
+            _df_m = ent[ent['perfil'].isin(PERFILES_MATERNAS)].copy()
+            _df_m.insert(0, 'tipo_registro',
+                         _df_m['perfil'].apply(lambda p: 'embarazada' if p in PERFILES_EMBARAZADA else 'lactante'))
+            _reg_mat = _df_m
+        _reg_adic = pd.DataFrame()
+        if df_adic_raw_in is not None and not df_adic_raw_in.empty:
+            _a = df_adic_raw_in.copy(); _a.insert(0, 'tipo_registro', 'nino_adicional')
+            _reg_adic = _a
+        hoja_reg = pd.concat([_reg_n, _reg_mat, _reg_adic], ignore_index=True)
+
+        # Niños adicionales
+        hoja_adic = df_adic_raw_in.copy() if df_adic_raw_in is not None and not df_adic_raw_in.empty else pd.DataFrame()
+
+        # Equipo de campo
+        hoja_eq = DF_EQUIPOS[['Equipo','Zona','Nombre','Rol']].copy().rename(
+            columns={'Nombre': 'encuestador', 'Zona': 'zona_asignada'})
+
+        return {
+            'Entrevistas (hogar)':    hoja_ent,
+            'Niños evaluados':        hoja_nin,
+            'Niños + Hogar':          hoja_nh,
+            'Registros (todo junto)': hoja_reg,
+            'Niños adicionales':      hoja_adic,
+            'Equipo de campo':        hoja_eq,
+            'Notas de tratamiento':   _notas,
+        }
+
+    try:
+        _hojas_tratadas = construir_base_tratada(df, ninos, df_adic_raw, df_ninos_raw, df_sec3_raw)
+        _n_ent_t  = len(_hojas_tratadas['Entrevistas (hogar)'])
+        _n_nin_t  = len(_hojas_tratadas['Niños evaluados'])
+        _n_sin_v  = int(_hojas_tratadas['Entrevistas (hogar)'].get('sin_nino_vinculado', pd.Series(False)).sum())
+        _n_impl   = int(_hojas_tratadas['Entrevistas (hogar)'].get('edad_implausible', pd.Series(False)).sum())
+        _n_tel    = int(_hojas_tratadas['Entrevistas (hogar)'].get('telefono_invalido', pd.Series(False)).sum())
+
+        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+        col_t1.metric("Entrevistas hogar",        _n_ent_t)
+        col_t2.metric("Niños evaluados",           _n_nin_t)
+        col_t3.metric("Sin niño vinculado",        _n_sin_v,  help="Perfil implica niño pero sin registro")
+        col_t4.metric("Teléfonos inválidos",       _n_tel,    help="Diferente a 8 dígitos")
+        if _n_impl:
+            st.warning(f"⚠️ {_n_impl} entrevistada(s) con edad implausible (<{EDAD_MINIMA_ENTREVISTADA} años) — revisar columna `edad_implausible`.")
+
+        from datetime import datetime as _dt3
+        _fecha_t = _dt3.now().strftime('%Y%m%d')
+        _buf_t = io.BytesIO()
+        with pd.ExcelWriter(_buf_t, engine='openpyxl') as _wt:
+            for _nh, _dh in _hojas_tratadas.items():
+                if not _dh.empty:
+                    _fechas_solo_fecha(_dh).to_excel(_wt, sheet_name=_nh[:31], index=False)
+        _buf_t.seek(0)
+        st.download_button(
+            f"⬇️ Descargar base tratada (protocolo aplicado) — {_fecha_t}.xlsx",
+            _buf_t,
+            f"UNICEF_FUSAL_Base_Tratada_{_fecha_t}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+    except Exception as _et:
+        st.error(f"Error generando base tratada: {_et}")
+        import traceback
+        st.code(traceback.format_exc())
+
+    st.markdown("---")
+    st.markdown("### 🗂️ Otras exportaciones")
+    st.caption(
+        "Base consolidada completa: **todas las variables** del formulario, v1 y v2 unificadas en una sola columna. "
+        "Una fila por niño (si la entrevistada tiene varios niños se repite su info). "
+        "Las personas sin niños aparecen con campos de niño vacíos. "
+        "Correcciones de talla y geografía aplicadas. Columnas `hfc_*` con flags de calidad."
+    )
+
+    ids_corregidos = set(correcciones['_id'].tolist()) if not correcciones.empty and '_id' in correcciones.columns else set()
+
+    # ─── helper: unifica col.1 → col para cualquier DataFrame ─────────────────
+    def _unify_versions(frame: pd.DataFrame) -> pd.DataFrame:
+        """Fusiona todas las columnas 'X.1' en su base 'X' (fillna) y las elimina."""
+        frame = frame.copy()
+        dot1 = [c for c in frame.columns if c.endswith('.1') and c[:-2] in frame.columns]
+        for c in dot1:
+            frame[c[:-2]] = frame[c[:-2]].fillna(frame[c])
+        frame = frame.drop(columns=dot1, errors='ignore')
+        # También manejar .2 si existiera
+        dot2 = [c for c in frame.columns if c.endswith('.2') and c[:-2] in frame.columns]
+        for c in dot2:
+            frame[c[:-2]] = frame[c[:-2]].fillna(frame[c])
+        frame = frame.drop(columns=dot2, errors='ignore')
+        return frame
+
+    # Columnas de sistema KoboToolbox que no aportan al análisis
+    _KOBO_SYS = {
+        'formhub/uuid','meta/instanceID','meta/deprecatedID',
+        '_notes','_tags','_bamboo_dataset_id','_submitted_by',
+        '_version_','_xform_id_string','_attachments',
+        '__version__','_geolocation',
+    }
+
+    # ─── 1. Entrevistada: todas las variables unificadas + correcciones ─────────
+    ent_all = _unify_versions(df_raw).copy() if not df_raw.empty else pd.DataFrame()
+
+    if not ent_all.empty:
+        # Quitar columnas de sistema (solo las que no tienen datos analíticos)
+        ent_all = ent_all.drop(columns=[c for c in _KOBO_SYS if c in ent_all.columns], errors='ignore')
+
+        # Corrección talla madre: > 3 m → dividir /100 (estaba en cm)
+        _talla_col = 'Talla (mts)'
+        if _talla_col in ent_all.columns:
+            _t_raw = pd.to_numeric(ent_all[_talla_col], errors='coerce')
+            ent_all[_talla_col]              = _t_raw.where(_t_raw <= 3, _t_raw / 100)
+            ent_all['hfc_talla_madre_corregida'] = _t_raw > 3
+        else:
+            ent_all['hfc_talla_madre_corregida'] = False
+
+        # Corrección geografía desde df procesado
+        if '_id' in df.columns and '_id' in ent_all.columns:
+            geo_cols = [c for c in ['distrito_nombre','canton_nombre','unidad_nombre'] if c in df.columns]
+            if geo_cols:
+                _geo = df.set_index('_id')[geo_cols]
+                ent_all = ent_all.set_index('_id').join(_geo, how='left').reset_index()
+
+        # Flag geo corregida
+        if '_id' in ent_all.columns:
+            ent_all['hfc_geo_corregida'] = ent_all['_id'].isin(ids_corregidos)
+
+        # Flag duplicado
+        if not f_dup.empty and '_id' in f_dup.columns and 'flag' in f_dup.columns and '_id' in ent_all.columns:
+            _dup_map = f_dup.drop_duplicates('_id').set_index('_id')['flag']
+            ent_all['hfc_duplicado'] = ent_all['_id'].map(_dup_map).fillna('')
+        else:
+            ent_all['hfc_duplicado'] = ''
+
+    # ─── 2. Niños: todas las variables unificadas + correcciones ───────────────
+    raw_ninos_all = pd.concat(
+        [s for s in [df_ninos_raw, df_sec3_raw, df_adic_raw] if not s.empty], ignore_index=True
+    ) if (not df_ninos_raw.empty or not df_sec3_raw.empty or not df_adic_raw.empty) else pd.DataFrame()
+
+    ninos_all = pd.DataFrame()
+    if not raw_ninos_all.empty:
+        ninos_all = _unify_versions(raw_ninos_all)
+        ninos_all = ninos_all.drop(columns=[c for c in _KOBO_SYS if c in ninos_all.columns], errors='ignore')
+
+        # Corrección talla niño: > 200 cm → dividir /10 (probablemente en mm)
+        _talla_n = '¿Cuál es la talla en cm del niño/a?'
+        if _talla_n in ninos_all.columns:
+            _tn_raw = pd.to_numeric(ninos_all[_talla_n], errors='coerce')
+            ninos_all[_talla_n]                  = _tn_raw.where(_tn_raw <= 200, _tn_raw / 10)
+            ninos_all['hfc_talla_nino_corregida'] = _tn_raw > 200
+        else:
+            ninos_all['hfc_talla_nino_corregida'] = False
+
+        # Prefixear columnas del niño que colisionan con las de entrevistada
+        # (excepto las de join y las hfc_)
+        _JOIN_KEYS = {'_parent_index', '_submission__id', '_id', '_index', 'hfc_talla_nino_corregida'}
+        if not ent_all.empty:
+            _collision = {
+                c: f'nino_{c}'
+                for c in ninos_all.columns
+                if c in ent_all.columns and c not in _JOIN_KEYS
+            }
+            ninos_all = ninos_all.rename(columns=_collision)
+
+    # ─── 3. JOIN: entrevistada (left) ← niños (right) ─────────────────────────
+    # Guardar lista de columnas del niño ANTES del merge para reordenar correctamente después
+    _nino_col_names = set(ninos_all.columns) if not ninos_all.empty else set()
+    _DROP_FROM_NINO = {'_parent_index', '_submission__id', '_ent_id', '_index', '_id'}
+
+    consolidado = pd.DataFrame()
+    if not ent_all.empty and not ninos_all.empty:
+        # Resolver _parent_index → _id de entrevistada
+        if '_index' in ent_all.columns and '_parent_index' in ninos_all.columns:
+            _idx2id = ent_all.set_index('_index')['_id']
+            ninos_all['_ent_id'] = ninos_all['_parent_index'].map(_idx2id)
+            _join_on = '_ent_id'
+        elif '_submission__id' in ninos_all.columns:
+            ninos_all['_ent_id'] = ninos_all['_submission__id']
+            _join_on = '_ent_id'
+        else:
+            _join_on = None
+
+        if _join_on and '_id' in ent_all.columns:
+            consolidado = ent_all.merge(
+                ninos_all.drop(columns=['_parent_index','_submission__id'], errors='ignore'),
+                left_on='_id', right_on=_join_on, how='left'
+            ).drop(columns=[_join_on], errors='ignore')
+        else:
+            consolidado = ent_all.copy()
+    elif not ent_all.empty:
+        consolidado = ent_all.copy()
+
+    # Reordenar: columnas clave de identificación → entrevistada → niño → hfc_
+    # Usamos _nino_col_names (capturado antes del merge) para saber exactamente qué es del niño
+    if not consolidado.empty:
+        _hfc_cols  = [c for c in consolidado.columns if c.startswith('hfc_')]
+        # Columnas que vinieron de ninos_all (excluir claves de join ya droppeadas)
+        _nino_cols = [c for c in consolidado.columns
+                      if c in _nino_col_names and c not in _DROP_FROM_NINO and not c.startswith('hfc_')]
+        _ent_cols  = [c for c in consolidado.columns
+                      if c not in _nino_cols and c not in _hfc_cols]
+
+        # Columnas de niño: nombre primero, luego el resto
+        _NINO_PRIORITY = ['¿Cuál es el nombre del niño/a?', 'Sexo', 'Fecha de nacimiento del niño a evaluar',
+                          'edad_nino', '¿Cuál es el peso en Kg del niño/a?', '¿Cuál es la talla en cm del niño/a?',
+                          'Medida del perímetro braquial en cm']
+        _nino_first = [c for c in _NINO_PRIORITY if c in _nino_cols]
+        _nino_rest  = [c for c in _nino_cols if c not in _nino_first]
+        _nino_ordered = _nino_first + _nino_rest
+
+        consolidado = consolidado[_ent_cols + _nino_ordered + _hfc_cols]
+
+    st.markdown("---")
+
+    # ─── 4. Descarga base consolidada ─────────────────────────────────────────
+    st.markdown("### 📋 Base consolidada completa con limpieza HFC")
+    st.caption(
+        "Todas las variables del formulario · v1/v2 unificadas · correcciones de talla y geo aplicadas · "
+        "columnas `hfc_*` al final con flags de calidad de datos."
+    )
+    if not consolidado.empty:
+        c1, c2, c3 = st.columns([3, 1, 1])
+        c1.caption(f"{len(consolidado)} filas · {len(consolidado.columns)} columnas")
+        c2.metric("Filas", len(consolidado))
+        c3.metric("Columnas", len(consolidado.columns))
+
+        buf_cons = io.BytesIO()
+        consolidado.to_excel(buf_cons, index=False); buf_cons.seek(0)
+        st.download_button(
+            "⬇️ Base consolidada HFC (.xlsx)", buf_cons,
+            "base_consolidada_hfc.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        with st.expander("👁️ Vista previa (primeras 10 filas)"):
+            st.dataframe(consolidado.head(10), use_container_width=True, hide_index=True)
+    else:
+        st.warning("No hay datos para exportar.")
+
+    st.markdown("---")
+
+    # ── REPORTE DE FLAGS ──────────────────────────────────────────────────────
+    st.markdown("### 🚦 Reporte de flags HFC")
+    if not todos.empty:
+        cols_f = [c for c in ['_id','nombre','fecha_dia','encuestador','Municipio','distrito_nombre','flag','severidad'] if c in todos.columns]
+        buf_flags = io.BytesIO()
+        with pd.ExcelWriter(buf_flags, engine='openpyxl') as w:
+            todos[cols_f].to_excel(w, sheet_name='Flags', index=False)
+            stats_enc(df).to_excel(w, sheet_name='Por encuestadora', index=False)
+        buf_flags.seek(0)
+        st.download_button("⬇️ Reporte de flags (.xlsx)", buf_flags, "hfc_flags.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.success("✅ Sin flags — no hay reporte que exportar.")
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: TABLAS NUTRICIONALES POR MUNICIPIO  (solicitud oct 2026)
+# ───────────────────────────────────────────────────────────────────────────────
+# INSTRUCCIONES DE INTEGRACIÓN EN hfc_app.py
+#
+# 1) En la línea de st.tabs([...]) agrega la variable y la etiqueta nuevas:
+#
+#    tab_avance, ..., tab_export, tab_tablas_mun, tab_unicef = st.tabs([
+#        "📊 Avance General",
+#        ...
+#        "📥 Exportar",
+#        "📑 Tablas por municipio",     # ← NUEVA
+#        "🇺🇳 Reporte UNICEF",
+#    ])
+#
+# 2) Pega TODO este bloque JUSTO ANTES de la sección
+#    "# TAB: REPORTE UNICEF"  (ese bloque usa st.stop(), y si este código
+#    queda después, no se ejecutaría cuando no hay datos en el rango UNICEF).
+#
+# Usa los mismos objetos ya filtrados por el sidebar: `df` (hogar) y `ninos`.
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_tablas_mun:
+    import re as _re_tm
+
+    st.subheader("📑 Estado nutricional por municipio")
+    st.caption(
+        "Respeta los filtros del sidebar. **Prevalencia (%) = casos ÷ evaluados** con "
+        "diagnóstico registrado en ese indicador (los registros sin dato no entran al denominador)."
+    )
+
+    # ── Definiciones ─────────────────────────────────────────────────────────
+    _C_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+    _C_TE = '¿Cuál es el diagnóstico nutricional de la talla y edad?'
+    _C_PE = '¿Cuál es el diagnóstico nutricional de peso edad?'
+
+    # (nombre, columna KoBo, regex que identifica el caso)
+    INDIC_NINOS = [
+        ('Desnutrición aguda (P/T)',   _C_PT, r'desnutrici|emaciad|emaciaci'),
+        ('Desnutrición crónica (T/E)', _C_TE, r'talla baja|desnutrici|retardo'),
+        ('Desnutrición global (P/E)',  _C_PE, r'desnutrici|bajo peso|peso bajo'),
+    ]
+    _SEV_RE  = r'sever|sebera|cebera'          # incluye errores de digitación vistos en KoBo
+    _VACIOS  = ['', 'nan', 'none', 'nat', 'sin dato']
+    GRUPOS_EDAD = ['0-5 meses', '6-11 meses', '12-23 meses', '24-59 meses', 'Revisar edad']
+    CATS_M = ['Bajo peso', 'Normal', 'Sobrepeso', 'Obesidad']
+
+    def _pct(n, d):
+        n = np.asarray(n, dtype=float); d = np.asarray(d, dtype=float)
+        return np.where(d > 0, np.round(n / np.where(d > 0, d, 1) * 100, 1), np.nan)
+
+    def _clasif_nino(serie, cond_re):
+        """Devuelve (válido, moderada, severa). 'Riesgo de...' NO cuenta como caso."""
+        s = serie.astype(str).str.lower().str.strip()
+        valido = serie.notna() & ~s.isin(_VACIOS)
+        cond = (valido & s.str.contains(cond_re, regex=True, na=False)
+                & ~s.str.contains('riesgo', na=False))
+        sev = cond & s.str.contains(_SEV_RE, regex=True, na=False)
+        mod = cond & ~sev
+        return valido, mod, sev
+
+    def _sexo_nino(serie):
+        s = serie.astype(str).str.lower().str.strip()
+        return np.select(
+            [s.str.contains('masc|hombre', na=False) | s.isin(['m', 'niño', 'nino']),
+             s.str.contains('fem|mujer', na=False)   | s.isin(['f', 'niña', 'nina'])],
+            ['Niño', 'Niña'], default='Sin dato')
+
+    def _orden_total(frame, col):
+        frame = frame.copy()
+        frame['_tot'] = frame[col] == 'TOTAL'
+        return frame
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. NIÑOS Y NIÑAS
+    # ══════════════════════════════════════════════════════════════════════════
+    _n = ninos.copy() if not ninos.empty else pd.DataFrame()
+    tabla_ninos_res = pd.DataFrame()
+    tabla_ninos_det = pd.DataFrame()
+
+    if not _n.empty:
+        _n['Municipio_t'] = (_n['Municipio'].fillna('Sin municipio').astype(str)
+                             if 'Municipio' in _n.columns else 'Sin municipio')
+        _dob_col = 'Fecha de nacimiento del niño a evaluar'
+        _dob = (pd.to_datetime(_n[_dob_col], errors='coerce') if _dob_col in _n.columns
+                else pd.Series(pd.NaT, index=_n.index))
+        _ref = (pd.to_datetime(_n['fecha_dia'], errors='coerce') if 'fecha_dia' in _n.columns
+                else pd.Series(pd.NaT, index=_n.index))
+        _em = (_ref - _dob).dt.days / 30.44           # edad en meses a la fecha de entrevista
+        _n['Grupo de edad'] = np.select(
+            [(_em >= 0) & (_em < 6), (_em >= 6) & (_em < 12),
+             (_em >= 12) & (_em < 24), (_em >= 24) & (_em < 60)],
+            GRUPOS_EDAD[:4], default='Revisar edad')
+        _n['Sexo_t'] = _sexo_nino(_n['Sexo']) if 'Sexo' in _n.columns else 'Sin dato'
+
+        def _tabla_ninos(dfn, keys):
+            vals = ['Evaluados', 'Moderada (n)', 'Severa (n)']
+            partes = []
+            for nombre, col, cre in INDIC_NINOS:
+                if col not in dfn.columns:
+                    continue
+                valido, mod, sev = _clasif_nino(dfn[col], cre)
+                tmp = dfn[keys].copy()
+                tmp['Evaluados']    = valido.astype(int)
+                tmp['Moderada (n)'] = mod.astype(int)
+                tmp['Severa (n)']   = sev.astype(int)
+                g = tmp.groupby(keys, dropna=False)[vals].sum().reset_index()
+                # Fila TOTAL (todos los municipios)
+                if len(keys) > 1:
+                    t = tmp.groupby(keys[1:], dropna=False)[vals].sum().reset_index()
+                else:
+                    t = tmp[vals].sum().to_frame().T
+                t[keys[0]] = 'TOTAL'
+                g = pd.concat([g, t[keys + vals]], ignore_index=True)
+                g['Indicador'] = nombre
+                partes.append(g)
+            if not partes:
+                return pd.DataFrame()
+            out = pd.concat(partes, ignore_index=True)
+            out[vals] = out[vals].astype(int)
+            out['Total casos (n)'] = out['Moderada (n)'] + out['Severa (n)']
+            for c in ['Moderada', 'Severa', 'Total casos']:
+                out[f'{c} (%)'] = _pct(out[f'{c} (n)'], out['Evaluados'])
+            out = _orden_total(out, keys[0])
+            if 'Grupo de edad' in out.columns:
+                out['Grupo de edad'] = pd.Categorical(out['Grupo de edad'], GRUPOS_EDAD, ordered=True)
+            out = out.sort_values(['Indicador', '_tot', keys[0]] + keys[1:]).drop(columns='_tot')
+            orden = ([keys[0], 'Indicador'] + keys[1:] +
+                     ['Evaluados', 'Moderada (n)', 'Moderada (%)', 'Severa (n)', 'Severa (%)',
+                      'Total casos (n)', 'Total casos (%)'])
+            return (out[orden].rename(columns={'Municipio_t': 'Municipio', 'Sexo_t': 'Sexo'})
+                    .reset_index(drop=True))
+
+        tabla_ninos_res = _tabla_ninos(_n, ['Municipio_t'])
+        tabla_ninos_det = _tabla_ninos(_n, ['Municipio_t', 'Grupo de edad', 'Sexo_t'])
+
+        st.markdown("### 👶 Niños y niñas — resumen por municipio")
+        if tabla_ninos_res.empty:
+            st.info("No se encontraron columnas de diagnóstico en la base.")
+        else:
+            st.dataframe(tabla_ninos_res, use_container_width=True, hide_index=True)
+
+            st.markdown("### 👶 Niños y niñas — por grupo de edad y sexo")
+            _mun_opts = ['Todos'] + [m for m in tabla_ninos_det['Municipio'].unique() if m != 'TOTAL'] + ['TOTAL']
+            _sel_m = st.selectbox("Municipio", _mun_opts, key='tm_mun_det')
+            _ind_opts = ['Todos'] + [i[0] for i in INDIC_NINOS]
+            _sel_i = st.selectbox("Indicador", _ind_opts, key='tm_ind_det')
+            _vista = tabla_ninos_det.copy()
+            if _sel_m != 'Todos': _vista = _vista[_vista['Municipio'] == _sel_m]
+            if _sel_i != 'Todos': _vista = _vista[_vista['Indicador'] == _sel_i]
+            st.dataframe(_vista, use_container_width=True, hide_index=True)
+
+            _n_rev = int((_n['Grupo de edad'] == 'Revisar edad').sum())
+            if _n_rev:
+                st.caption(f"⚠️ {_n_rev} niño(s) en 'Revisar edad': sin fecha de nacimiento válida o con ≥60 meses.")
+
+        with st.expander("🔍 Verificar cómo se clasificaron las categorías de KoBo"):
+            st.caption("Revisa que cada texto de KoBo caiga en la clasificación correcta. "
+                       "Si alguna sale mal, ajusta los regex de INDIC_NINOS o _SEV_RE.")
+            for nombre, col, cre in INDIC_NINOS:
+                if col in _n.columns:
+                    _vc = _n[col].fillna('(vacío)').astype(str).value_counts().reset_index()
+                    _vc.columns = ['Valor en KoBo', 'N']
+                    _v, _mo, _se = _clasif_nino(_vc['Valor en KoBo'].replace('(vacío)', np.nan), cre)
+                    _vc['Clasificado como'] = np.select([_se, _mo, _v], ['Severa', 'Moderada', 'No es caso'],
+                                                        default='Sin dato (excluido)')
+                    st.markdown(f"**{nombre}**")
+                    st.dataframe(_vc, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin datos de niños/as en la vista actual.")
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. MUJERES EMBARAZADAS Y LACTANTES
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 🤰🤱 Mujeres embarazadas y lactantes — estado nutricional")
+    tabla_mujeres = pd.DataFrame()
+    _m = pd.DataFrame()
+    if 'perfil' in df.columns:
+        # Misma lógica de conteo que el tablero: dedup por (nombre, perfil)
+        _m = (df[df['perfil'].isin(PERFILES_MATERNAS)].dropna(subset=['nombre'])
+              .drop_duplicates(subset=['nombre', 'perfil']).copy())
+
+    if not _m.empty:
+        _m['Municipio_t'] = (_m['Municipio'].fillna('Sin municipio').astype(str)
+                             if 'Municipio' in _m.columns else 'Sin municipio')
+        _m['Tipo'] = np.where(_m['perfil'].isin(PERFILES_EMBARAZADA), 'Embarazada', 'Lactante')
+
+        # a) Diagnóstico de texto de KoBo (si existe en el formulario)
+        _col_dx_m = next((c for c in _m.columns
+                          if any(k in c.lower() for k in ['estado nutricional', 'diagnóstico nutricional',
+                                                          'diagnostico nutricional'])
+                          and 'niño' not in c.lower() and 'braquial' not in c.lower()), None)
+
+        def _cat_texto(v):
+            s = str(v).lower().strip()
+            if s in _VACIOS: return None
+            if 'obes' in s: return 'Obesidad'
+            if 'sobrepeso' in s: return 'Sobrepeso'
+            if _re_tm.search(r'bajo peso|desnutri|enflaquec|delgadez', s): return 'Bajo peso'
+            if _re_tm.search(r'normal|adecuad', s): return 'Normal'
+            return None
+
+        _cat_txt = _m[_col_dx_m].apply(_cat_texto) if _col_dx_m else pd.Series(None, index=_m.index, dtype=object)
+
+        # b) Respaldo: IMC (del formulario o calculado con peso/talla)
+        _imc   = pd.to_numeric(_m['imc'], errors='coerce')   if 'imc'   in _m.columns else pd.Series(np.nan, index=_m.index)
+        _peso  = pd.to_numeric(_m['peso'], errors='coerce')  if 'peso'  in _m.columns else pd.Series(np.nan, index=_m.index)
+        _talla = pd.to_numeric(_m['talla'], errors='coerce') if 'talla' in _m.columns else pd.Series(np.nan, index=_m.index)
+        _imc_calc = (_peso / _talla.pow(2)).where(_talla.between(1.3, 2.0) & _peso.between(30, 150))
+        _imc = _imc.where(_imc.between(10, 60), _imc_calc)
+        _cat_imc = pd.Series(np.select(
+            [_imc < 18.5, _imc < 25, _imc < 30, _imc >= 30],
+            ['Bajo peso', 'Normal', 'Sobrepeso', 'Obesidad'], default=''), index=_m.index).replace('', None)
+
+        _m['IMC usado'] = _imc.round(1)
+        _m['Clasificación'] = _cat_txt.where(_cat_txt.notna(), _cat_imc)
+        _m['Fuente clasificación'] = np.where(_cat_txt.notna(), 'Diagnóstico KoBo',
+                                              np.where(_cat_imc.notna(), 'IMC', 'Sin dato'))
+
+        def _tabla_mujeres(dfm):
+            base = pd.concat([dfm, dfm.assign(Municipio_t='TOTAL')], ignore_index=True)
+            base = pd.concat([base, base.assign(Tipo='Total (emb. + lact.)')], ignore_index=True)
+            for c in CATS_M:
+                base[f'{c} (n)'] = (base['Clasificación'] == c).astype(int)
+            out = (base.groupby(['Municipio_t', 'Tipo'])
+                   .agg(**{'Registradas': ('Clasificación', 'size'),
+                           'Evaluadas (con clasificación)': ('Clasificación', 'count')},
+                        **{f'{c} (n)': (f'{c} (n)', 'sum') for c in CATS_M})
+                   .reset_index())
+            for c in CATS_M:
+                out[f'{c} (%)'] = _pct(out[f'{c} (n)'], out['Evaluadas (con clasificación)'])
+            out = _orden_total(out, 'Municipio_t')
+            out['Tipo'] = pd.Categorical(out['Tipo'], ['Embarazada', 'Lactante', 'Total (emb. + lact.)'], ordered=True)
+            out = out.sort_values(['_tot', 'Municipio_t', 'Tipo']).drop(columns='_tot')
+            cols = (['Municipio_t', 'Tipo', 'Registradas', 'Evaluadas (con clasificación)'] +
+                    [x for c in CATS_M for x in (f'{c} (n)', f'{c} (%)')])
+            return out[cols].rename(columns={'Municipio_t': 'Municipio'}).reset_index(drop=True)
+
+        tabla_mujeres = _tabla_mujeres(_m)
+        st.dataframe(tabla_mujeres, use_container_width=True, hide_index=True)
+
+        _fuentes = _m['Fuente clasificación'].value_counts().to_dict()
+        st.caption(
+            f"Fuente de la clasificación → {', '.join(f'{k}: {v}' for k, v in _fuentes.items())}. "
+            + (f"Columna de diagnóstico usada: «{_col_dx_m}». " if _col_dx_m else
+               "No se encontró columna de diagnóstico de la mujer; se usó IMC (OMS: <18.5 bajo peso, "
+               "25–29.9 sobrepeso, ≥30 obesidad). ")
+            + "⚠️ Para embarazadas lo correcto es IMC según semana gestacional; si el tablero/KoBo ya trae "
+              "esa clasificación, se usa esa en lugar del IMC."
+        )
+
+        with st.expander("🔍 Ver registros de mujeres sin clasificación"):
+            _sin = _m[_m['Clasificación'].isna()]
+            _cs = [c for c in ['_id', 'nombre', 'Tipo', 'Municipio_t', 'encuestador', 'peso', 'talla', 'imc'] if c in _sin.columns]
+            st.dataframe(_sin[_cs].rename(columns={'Municipio_t': 'Municipio'}), use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin registros de embarazadas o lactantes en la vista actual.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. DESCARGA EXCEL
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    if tabla_ninos_res.empty and tabla_mujeres.empty:
+        st.info("No hay tablas para descargar.")
+    else:
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        from datetime import datetime as _dt_tm
+
+        _notas_tm = pd.DataFrame([
+            ('Fuente', 'Base KoBo con limpieza HFC aplicada (aliases, correcciones geográficas, deduplicación de niños).'),
+            ('Filtros', 'Se respetan los filtros activos del sidebar al momento de descargar.'),
+            ('Prevalencia', 'Casos ÷ evaluados con diagnóstico registrado en ese indicador × 100.'),
+            ('Moderada / Severa', 'Severa = el diagnóstico de KoBo contiene "severa/severo". Moderada = resto de casos. "Riesgo de..." no cuenta como caso.'),
+            ('Aguda (P/T)', 'Diagnóstico peso para la talla: desnutrición aguda / emaciación.'),
+            ('Crónica (T/E)', 'Diagnóstico talla para la edad: talla baja / desnutrición crónica.'),
+            ('Global (P/E)', 'Diagnóstico peso para la edad: desnutrición global / bajo peso.'),
+            ('Edad', 'Calculada desde fecha de nacimiento a la fecha de la entrevista. "Revisar edad" = sin fecha válida o ≥60 meses.'),
+            ('Mujeres', 'Embarazadas y lactantes deduplicadas por nombre + perfil. Clasificación del diagnóstico de KoBo; si no existe, por IMC.'),
+            ('Generado', _dt_tm.now().strftime('%Y-%m-%d %H:%M')),
+        ], columns=['Concepto', 'Definición'])
+
+        _hojas_tm = {
+            'Niños - Resumen municipio': tabla_ninos_res,
+            'Niños - Edad y sexo':       tabla_ninos_det,
+            'Mujeres emb. y lact.':      tabla_mujeres,
+            'Notas':                     _notas_tm,
+        }
+        _buf_tm = io.BytesIO()
+        with pd.ExcelWriter(_buf_tm, engine='openpyxl') as _w:
+            for _nom, _tab in _hojas_tm.items():
+                if _tab.empty:
+                    continue
+                _tab_x = _tab.copy()
+                for _c in _tab_x.columns:
+                    if isinstance(_tab_x[_c].dtype, pd.CategoricalDtype):
+                        _tab_x[_c] = _tab_x[_c].astype(str)
+                _tab_x.to_excel(_w, sheet_name=_nom[:31], index=False)
+                _ws = _w.sheets[_nom[:31]]
+                for _cell in _ws[1]:
+                    _cell.font = Font(bold=True, color='FFFFFFFF')
+                    _cell.fill = PatternFill('solid', fgColor='FF1F4E79')
+                    _cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                for _row in _ws.iter_rows(min_row=2):
+                    if str(_row[0].value) == 'TOTAL':
+                        for _cell in _row:
+                            _cell.font = Font(bold=True)
+                            _cell.fill = PatternFill('solid', fgColor='FFD9E1F2')
+                for _i, _col in enumerate(_tab_x.columns, 1):
+                    _ancho = max(len(str(_col)), _tab_x[_col].astype(str).str.len().max() if len(_tab_x) else 0)
+                    _ws.column_dimensions[get_column_letter(_i)].width = min(max(_ancho + 2, 10), 60)
+                _ws.freeze_panes = 'B2'
+        _buf_tm.seek(0)
+        st.download_button(
+            "⬇️ Descargar tablas por municipio (.xlsx)",
+            _buf_tm,
+            f"Tablas_nutricionales_municipio_{_dt_tm.now().strftime('%Y%m%d')}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: REPORTE UNICEF
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_unicef:
+    st.subheader("🇺🇳 Reporte UNICEF — Herramienta de Reportería")
+    st.caption(
+        "Tabla en el formato exacto de la Herramienta de Reportería de UNICEF. "
+        "Selecciona el mes y descarga el Excel listo para enviar."
+    )
+
+    # ── Helpers de conteo ────────────────────────────────────────────────────
+    DISTRITOS_UNICEF = [
+        'Ahuachapán Centro','San Miguel Centro','San Salvador Centro',
+        'San Salvador Este','Santa Ana Centro','Usulután Este',
+    ]
+    # La matriz usa "Usulatán Este" (con acento en U) — map inverso para mostrar
+    DIST_LABEL = {d: d for d in DISTRITOS_UNICEF}
+    DIST_LABEL['Usulután Este'] = 'Usulatán Este'
+
+    AGE_GROUPS = ['0-5m','6-11m','12-23m','24-59m','5-9a','10-14a','15-17a','18-24a','25-59a','60+a']
+
+    def _unicef_edad_adulto(row, ref=None):
+        if ref is None: ref = date.today()
+        e = row.get('edad_a', np.nan) if hasattr(row, 'get') else np.nan
+        dob = row.get('dob_calc', pd.NaT) if hasattr(row, 'get') else pd.NaT
+        fecha_row = row.get('fecha_dia', None) if hasattr(row, 'get') else None
+        if fecha_row is not None:
+            try: ref = pd.Timestamp(fecha_row).date()
+            except: pass
+        if pd.isna(e) and pd.notna(dob):
+            try: e = (ref - dob.date()).days / 365.25
+            except: e = np.nan
+        if pd.isna(e): return '25-59a'
+        e = float(e)
+        if e < 15: return '10-14a'
+        elif e < 18: return '15-17a'
+        elif e < 25: return '18-24a'
+        elif e < 60: return '25-59a'
+        else: return '60+a'
+
+    def _unicef_edad_nino(dob, ref=None):
+        if ref is None: ref = date.today()
+        if pd.isna(dob): return 'desc'
+        try:
+            m = (ref - dob.date()).days / 30.44
+        except: return 'desc'
+        if m < 6: return '0-5m'
+        elif m < 12: return '6-11m'
+        elif m < 24: return '12-23m'
+        elif m < 60: return '24-59m'
+        elif m < 120: return '5-9a'
+        elif m < 180: return '10-14a'
+        elif m < 216: return '15-17a'
+        else: return '25-59a'
+
+    def _build_breakdown(df_main_sel, df_ninos_sel):
+          """Devuelve dict {(grupo_edad, sexo): count} y conteos de discapacidad."""
+          import re as _re
+          bd = {}
+          disc_counts = {'M_0_17': 0, 'F_0_17': 0, 'M_18+': 0, 'F_18+': 0}
+  
+          def _has_disability(row):
+              # Basado estrictamente en el Diccionario de Datos
+              cols_evaluar = [
+                  '¿Posee alguna discapacidad?', 
+                  '¿Posee alguna neurodivergencia?',
+                  'nino_¿Posee alguna discapacidad?',
+                  'nino_¿Posee alguna neurodivergencia?'
+              ]
+              for col in cols_evaluar:
+                  if col in row.index:
+                      val = str(row[col]).strip().lower()
+                      if val in ['sí', 'si', 'true', '1']:
+                          return True
+              return False
+  
+          # Adultos
+          if not df_main_sel.empty:
+              edad_txt = df_main_sel.get('edad_txt', pd.Series(dtype=str)) if 'edad_txt' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+              def _parse_e(s):
+                  m = _re.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
+              edad_a = edad_txt.apply(_parse_e)
+              dob_col = df_main_sel.get('dob_calc', pd.Series(dtype=object)) if 'dob_calc' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
+              sexo_col = df_main_sel.get('sexo_std_u', pd.Series(dtype=str)) if 'sexo_std_u' in df_main_sel.columns else pd.Series(dtype=str, index=df_main_sel.index)
+              fecha_col = df_main_sel.get('fecha_dia', pd.Series(dtype=object, index=df_main_sel.index)) if 'fecha_dia' in df_main_sel.columns else pd.Series(dtype=object, index=df_main_sel.index)
+              for i in df_main_sel.index:
+                  g = _unicef_edad_adulto({'edad_a': edad_a.get(i, np.nan), 'dob_calc': dob_col.get(i, pd.NaT), 'fecha_dia': fecha_col.get(i, None)})
+                  s = 'M' if 'masc' in str(sexo_col.get(i,'')).lower() else 'F'
+                  bd[(g,s)] = bd.get((g,s),0) + 1
+                  
+                  # Clasificar discapacidad (Adultos)
+                  if _has_disability(df_main_sel.loc[i]):
+                      age_years = edad_a.get(i, np.nan)
+                      if pd.isna(age_years) and pd.notna(dob_col.get(i, pd.NaT)) and pd.notna(fecha_col.get(i, None)):
+                          try: age_years = (pd.Timestamp(fecha_col.get(i)) - pd.Timestamp(dob_col.get(i))).days / 365.25
+                          except: pass
+                      is_under_18 = (age_years < 18) if pd.notna(age_years) else False 
+                      if is_under_18: disc_counts[f"{s}_0_17"] += 1
+                      else: disc_counts[f"{s}_18+"] += 1
+  
+          # Niños
+          if not df_ninos_sel.empty:
+              dob_n = pd.to_datetime(df_ninos_sel.get('Fecha de nacimiento del niño a evaluar', pd.Series(dtype=object)), errors='coerce') if 'Fecha de nacimiento del niño a evaluar' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
+              sexo_n = df_ninos_sel.get('Sexo', pd.Series(dtype=str, index=df_ninos_sel.index))
+              fecha_n = df_ninos_sel.get('fecha_dia', pd.Series(dtype=object, index=df_ninos_sel.index)) if 'fecha_dia' in df_ninos_sel.columns else pd.Series(dtype=object, index=df_ninos_sel.index)
+              for i in df_ninos_sel.index:
+                  _ref_n = None
+                  try: _ref_n = pd.Timestamp(fecha_n.get(i)).date()
+                  except: pass
+                  g = _unicef_edad_nino(dob_n.get(i, pd.NaT), ref=_ref_n)
+                  s = 'M' if 'masc' in str(sexo_n.get(i,'')).lower() else 'F'
+                  bd[(g,s)] = bd.get((g,s),0) + 1
+                  
+                  # Clasificar discapacidad (Niños)
+                  if _has_disability(df_ninos_sel.loc[i]):
+                      disc_counts[f"{s}_0_17"] += 1 
+                      
+          return bd, disc_counts
+    
+    # Enriquecer df con columnas auxiliares para este tab
+   # Enriquecer df con columnas auxiliares para este tab
+    # Enriquecer df con columnas auxiliares para este tab
+    _df_u = df.copy() if not df.empty else pd.DataFrame()
+    _ninos_u = ninos.copy() if not ninos.empty else pd.DataFrame()
+
+    # ── SELECTOR DE FECHAS Y MES DESTINO ──
+    st.markdown("**📅 Parámetros para el reporte UNICEF**")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        # Fechas por defecto fijas: 18 al 31 de agosto
+        _default_start = pd.to_datetime('2026-08-18').date()
+        _default_end   = pd.to_datetime('2026-08-31').date()
+        
+        # Limites del calendario según los datos disponibles
+        _cal_min = _default_start
+        _cal_max = _default_end
+        if not _df_u.empty and 'fecha_dia' in _df_u.columns:
+            _fechas_validas = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dropna().dt.date
+            if not _fechas_validas.empty:
+                _cal_min = min(_fechas_validas.min(), _default_start)
+                _cal_max = max(_fechas_validas.max(), _default_end)
+
+        rango_unicef = st.date_input(
+            "1. Selecciona inicio y fin:",
+            value=(_default_start, _default_end),
+            min_value=_cal_min,
+            max_value=_cal_max,
+            key="rango_unicef_input"
+        )
+        
+    with col2:
+        mes_plantilla = st.selectbox(
+            "2. ¿En qué mes de la matriz escribimos?",
+            ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"],
+            index=1,
+            help="Debe coincidir exactamente con el texto de la columna 'Mes de Reporte' (ej. 2026-08)."
+        )
+
+    if len(rango_unicef) != 2:
+        st.warning("⏳ Selecciona una fecha de inicio y fin para continuar.")
+        st.stop()
+
+    fecha_inicio, fecha_fin = rango_unicef
+    _etiqueta_periodo = f"{fecha_inicio.strftime('%d/%m')} al {fecha_fin.strftime('%d/%m')}"
+
+    # ── FILTRO POR RANGO DE FECHAS ──
+    if not _df_u.empty and 'fecha_dia' in _df_u.columns:
+        _df_u['fecha_dia_dt'] = pd.to_datetime(_df_u['fecha_dia'], errors='coerce').dt.date
+        _df_u = _df_u[(_df_u['fecha_dia_dt'] >= fecha_inicio) & (_df_u['fecha_dia_dt'] <= fecha_fin)].copy()
+        
+        # ⚠️ CRÍTICO: Asignamos el mes en formato 2026-08 para hacer match con el Excel
+        _df_u['mes'] = mes_plantilla  
+        
+        import re as _re2
+        def _pe(s):
+            m = _re2.search(r'(\d+)\s*año', str(s)); return float(m.group(1)) if m else np.nan
+        _df_u['edad_txt'] = _df_u.get('edad_entrevistado', pd.Series(dtype=str, index=_df_u.index)) if 'edad_entrevistado' in _df_u.columns else pd.Series(dtype=str, index=_df_u.index)
+        _df_u['edad_a']   = _df_u['edad_txt'].apply(_pe)
+        
+        _dob_raw = df_raw.get('Fecha de nacimiento de la persona entrevistada') if 'Fecha de nacimiento de la persona entrevistada' in df_raw.columns else df_raw.get('Fecha de nacimiento de la persona entrevistada.1')
+        if _dob_raw is not None and '_id' in df_raw.columns and '_id' in _df_u.columns:
+            _dob_map = df_raw.set_index('_id')[_dob_raw.name] if hasattr(_dob_raw, 'name') else df_raw.set_index('_id').get('Fecha de nacimiento de la persona entrevistada')
+            _df_u['dob_calc'] = pd.to_datetime(_df_u['_id'].map(_dob_map) if _dob_map is not None else pd.NaT, errors='coerce')
+        else:
+            _df_u['dob_calc'] = pd.NaT
+            
+        _df_u['sexo_std_u'] = _df_u.get('sexo', pd.Series(dtype=str, index=_df_u.index)).astype(str).str.lower()
+
+    if not _ninos_u.empty and 'fecha_dia' in _ninos_u.columns:
+        _ninos_u['fecha_dia_dt'] = pd.to_datetime(_ninos_u['fecha_dia'], errors='coerce').dt.date
+        _ninos_u = _ninos_u[(_ninos_u['fecha_dia_dt'] >= fecha_inicio) & (_ninos_u['fecha_dia_dt'] <= fecha_fin)].copy()
+        _ninos_u['mes'] = mes_plantilla
+
+    if _df_u.empty and _ninos_u.empty:
+        st.warning(f"No se encontraron tamizajes entre el {fecha_inicio.strftime('%d/%m/%Y')} y el {fecha_fin.strftime('%d/%m/%Y')}.")
+        st.stop()
+    else:
+        _meses_sel = [mes_plantilla]
+        
+        with st.expander("🔍 Debug — valores en datos", expanded=False):
+            st.write("**Periodo filtrado matemáticamente:**", _etiqueta_periodo)
+            st.write("**Bloque a sobrescribir en el Excel:**", mes_plantilla)
+          
+        INDICADORES = [
+            ('TAM',  '# de personas tamizadas para detectar desnutrición aguda en los municipios priorizados.'),
+            ('IYCF', '# de personas que se benefician de la orientación e información comunitaria sobre alimentación de lactantes y niñas/niños pequeños en situaciones de emergencia (IYCF-E).'),
+            ('REF',  '# de personas referidas a primer nivel de atención para el tratamiento de desnutrición aguda.'),
+            ('DESN', '# de personas con nutrición aguda identificadas'),
+        ]
+
+        # Construir tabla
+        rows_tabla = []
+        rows_export = []   # para el Excel descargable
+
+        # Columna de distrito para filtrar — Municipio contiene "Ahuachapán Centro" etc.
+        _dist_col_m = 'Municipio' if not _df_u.empty and 'Municipio' in _df_u.columns else 'distrito_nombre'
+        _dist_col_n = 'Municipio' if not _ninos_u.empty and 'Municipio' in _ninos_u.columns else 'distrito_nombre'
+
+        # IDs de entrevistadas que YA tienen niños registrados → no contar doble en TAM
+        _ids_con_ninos = set()
+        if not _ninos_u.empty:
+            for _col_id in ['_submission_id', '_submission__id', '_parent_index']:
+                if _col_id in _ninos_u.columns:
+                    _ids_con_ninos = set(_ninos_u[_col_id].dropna().astype(int))
+                    break
+
+        for _mes_sel in _meses_sel:
+          for ind_key, ind_label in INDICADORES:
+            for dist in DISTRITOS_UNICEF:
+                if not _df_u.empty and 'mes' in _df_u.columns and _dist_col_m in _df_u.columns:
+                    _mm = _df_u[(_df_u['mes'] == _mes_sel) & (_df_u[_dist_col_m] == dist)]
+                else:
+                    _mm = pd.DataFrame()
+                if not _ninos_u.empty and 'mes' in _ninos_u.columns and _dist_col_n in _ninos_u.columns:
+                    _mn = _ninos_u[(_ninos_u['mes'] == _mes_sel) & (_ninos_u[_dist_col_n] == dist)]
+                else:
+                    _mn = pd.DataFrame()
+
+                if ind_key == 'TAM':
+                    _col_perfil_m = 'perfil' if 'perfil' in _mm.columns else ('Perfil de la persona entrevistada' if 'Perfil de la persona entrevistada' in _mm.columns else None)
+                    _mm_mat = _mm[_mm[_col_perfil_m].isin(PERFILES_MATERNAS)] if (_col_perfil_m and not _mm.empty) else _mm
+                    bd, disc_counts = _build_breakdown(_mm_mat, _mn)
+                    total = sum(bd.values())
+                elif ind_key == 'IYCF':
+                    _SI = 'Sí|Si|1|True'
+                    _col_cons_n = '¿Se le brindó consejería a niños y niñas?'
+                    _mn_cons = _mn[_mn[_col_cons_n].astype(str).str.contains(_SI, case=False, na=False)] if not _mn.empty and _col_cons_n in _mn.columns else pd.DataFrame()
+                    bd, disc_counts = _build_breakdown(pd.DataFrame(), _mn_cons)
+                    total = sum(bd.values())
+                elif ind_key == 'REF':
+                    _COL_PT = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+                    _EMAC_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
+                    _SI_RE = 'sí|si|1|true'
+                    
+                    # Niños: diagnóstico crítico + confirmación de referencia
+                    _col_ref_n = '¿Se brindó referencia?'
+                    _nr = pd.DataFrame()
+                    if not _mn.empty and _COL_PT in _mn.columns and _col_ref_n in _mn.columns:
+                        _mask_pt_n = _mn[_COL_PT].astype(str).str.lower().str.contains(_EMAC_RE, na=False)
+                        _mask_ref_n = _mn[_col_ref_n].astype(str).str.lower().str.contains(_SI_RE, na=False)
+                        _nr = _mn[_mask_pt_n & _mask_ref_n]
+                        
+                    # Maternas: diagnóstico crítico + confirmación de referencia
+                    _mr = pd.DataFrame()
+                    if not _mm.empty:
+                        _col_diag_m = next((c for c in _mm.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
+                        _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
+                        _col_ref_m = 'referencia' if 'referencia' in _mm.columns else None
+                        if _col_diag_m and _col_perfil and _col_ref_m:
+                            _mask_diag_m = _mm[_col_diag_m].astype(str).str.lower().str.contains(_EMAC_RE, na=False)
+                            _mask_perf_m = _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
+                            _mask_ref_m = _mm[_col_ref_m].astype(str).str.lower().str.contains(_SI_RE, na=False)
+                            _mr = _mm[_mask_diag_m & _mask_perf_m & _mask_ref_m]
+                            
+                    bd, disc_counts = _build_breakdown(_mr, _nr)
+                    total = sum(bd.values())
+                    
+                elif ind_key == 'DESN':
+                    _DESN_RE = 'emaciado|emaciaci|desnutrici|aguda severa|aguda moderada|sebera|cebera'
+                    _COL_PT_D  = '¿Cuál es el diagnóstico nutricional del peso y la talla?'
+                    _COL_MUAC  = 'Diagnóstico nutricional según perímetro braquial'
+                    
+                    # Niños: Identificados en P/T o MUAC
+                    _nd = pd.DataFrame()
+                    if not _mn.empty:
+                        _mask_d = pd.Series(False, index=_mn.index)
+                        if _COL_PT_D in _mn.columns: _mask_d |= _mn[_COL_PT_D].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        if _COL_MUAC in _mn.columns: _mask_d |= _mn[_COL_MUAC].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                        _nd = _mn[_mask_d]
+                        
+                    # Maternas: Identificadas
+                    _md = pd.DataFrame()
+                    if not _mm.empty:
+                        _col_diag_m = next((c for c in _mm.columns if 'diagnós' in c.lower() or 'estado nutricional' in c.lower()), None)
+                        _col_perfil = 'perfil' if 'perfil' in _mm.columns else None
+                        if _col_diag_m and _col_perfil:
+                            _mask_diag_m = _mm[_col_diag_m].astype(str).str.lower().str.contains(_DESN_RE, na=False)
+                            _mask_perf_m = _mm[_col_perfil].astype(str).str.lower().str.contains('embaraz|lactant', na=False)
+                            _md = _mm[_mask_diag_m & _mask_perf_m]
+                            
+                    bd, disc_counts = _build_breakdown(_md, _nd)
+                    total = sum(bd.values())
+                else:
+                    total, bd, disc_counts = 0, {}, {'M_0_17':0, 'F_0_17':0, 'M_18+':0, 'F_18+':0}
+
+                row = {
+                    'Mes':       str(_mes_sel),
+                    'Indicador': ind_label,
+                    'Distrito':  DIST_LABEL.get(dist, dist),
+                    'Total':     total,
+                    'Nuevos':    total,
+                    **disc_counts
+                }
+                for g in AGE_GROUPS:
+                    row[f'Niños {g}'] = bd.get((g,'M'), 0)
+                    row[f'Niñas {g}'] = bd.get((g,'F'), 0)
+
+                rows_tabla.append({
+                    'Mes':       str(_mes_sel),
+                    'Indicador': ind_key,
+                    'Distrito':  DIST_LABEL.get(dist, dist),
+                    'Total':     total,
+                    **{g: bd.get((g,'M'),0) + bd.get((g,'F'),0) for g in AGE_GROUPS},
+                })
+                rows_export.append(row)
+              
+        df_tabla = pd.DataFrame(rows_tabla)
+        df_export = pd.DataFrame(rows_export)
+
+        # ── Vista en pantalla: por mes y por indicador ───────────────────────
+        for _mes_v in _meses_sel:
+            st.markdown(f"#### 📅 {_mes_v}")
+            _sub_mes = df_tabla[df_tabla['Mes'] == str(_mes_v)]
+            for ind_key, ind_label in INDICADORES:
+                st.markdown(f"**{ind_key} — {ind_label[:80]}{'…' if len(ind_label)>80 else ''}**")
+                sub = _sub_mes[_sub_mes['Indicador']==ind_key].drop(columns=['Indicador','Mes']).set_index('Distrito')
+                cols_con_datos = ['Total'] + [c for c in AGE_GROUPS if sub[c].sum() > 0]
+                st.dataframe(sub[cols_con_datos], use_container_width=True)
+            st.markdown("")
+
+        # ── Descarga Excel en formato UNICEF ─────────────────────────────────
+        st.markdown("---")
+        _label_meses = '+'.join(str(m) for m in _meses_sel)
+        st.markdown(f"### ⬇️ Descargar en formato Herramienta de Reportería UNICEF — {_label_meses}")
+
+        _MATRIZ_PATH = str(_resolve('4. Matriz de Indicadores - FUSAL.xlsx'))
+        _matriz_existe = os.path.isfile(_MATRIZ_PATH)
+
+        # ── Hoja resumen acumulado de tamizados ───────────────────────────────
+        _num_cols = ['Total','Nuevos'] + [f'Niños {g}' for g in AGE_GROUPS] + [f'Niñas {g}' for g in AGE_GROUPS]
+        _tam_label = next((idl for ik, idl in INDICADORES if ik == 'TAM'), None)
+        _df_tam_all = df_export[df_export['Indicador'] == _tam_label].copy() if _tam_label else pd.DataFrame()
+
+        if not _df_tam_all.empty:
+            _resumen = _df_tam_all.groupby('Distrito')[_num_cols].sum().reset_index()
+            _total_row = _resumen[_num_cols].sum().to_frame().T
+            _total_row['Distrito'] = 'TOTAL'
+            _resumen = pd.concat([_resumen, _total_row[['Distrito'] + _num_cols]], ignore_index=True)
+        else:
+            _resumen = pd.DataFrame()
+
+        if _matriz_existe:
+            from openpyxl import load_workbook as _load_wb
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+
+            _buf_matriz = io.BytesIO()
+            with open(_MATRIZ_PATH, 'rb') as _f:
+                _buf_matriz.write(_f.read())
+            _buf_matriz.seek(0)
+
+            _wb = _load_wb(_buf_matriz)
+            _ws = _wb['Herramienta de Reportería']
+
+            _COL_MAP = {
+                ('0-5m','M'):8,  ('0-5m','F'):9,
+                ('6-11m','M'):10,('6-11m','F'):11,
+                ('12-23m','M'):12,('12-23m','F'):13,
+                ('24-59m','M'):14,('24-59m','F'):15,
+                ('5-9a','M'):16, ('5-9a','F'):17,
+                ('10-14a','M'):18,('10-14a','F'):19,
+                ('15-17a','M'):20,('15-17a','F'):21,
+                ('18-24a','M'):22,('18-24a','F'):23,
+                ('25-59a','M'):24,('25-59a','F'):25,
+                ('60+a','M'):26, ('60+a','F'):27,
+            }
+            # índice: (indicador_label, mes_str, distrito) → fila de datos
+            _export_idx = {(r['Indicador'], r['Mes'], r['Distrito']): r for r in rows_export}
+
+            for _row in _ws.iter_rows(min_row=9, max_row=260):
+                _ind = _row[2].value
+                _mes_cell = str(_row[3].value) if _row[3].value else ''
+                _dist = _row[4].value
+                if not _ind or not _mes_cell or not _dist: continue
+                if _mes_cell not in [str(m) for m in _meses_sel]: continue
+                if 'afirman' in str(_ind).lower() or 'mecanismo' in str(_ind).lower(): continue
+
+                _key = None
+                for (ik, idl) in INDICADORES:
+                    if idl == _ind or (ik == 'TAM' and 'tamizad' in _ind.lower()) \
+                       or (ik == 'IYCF' and 'orientación' in _ind.lower() and 'lactante' in _ind.lower()) \
+                       or (ik == 'REF' and 'referid' in _ind.lower()) \
+                       or (ik == 'DESN' and 'con nutrición aguda' in _ind.lower()):
+                        _key = (idl, _mes_cell, _dist)
+                        break
+                if _key not in _export_idx: continue
+
+                _rec = _export_idx[_key]
+                _row[5].value = _rec['Total']
+                _row[6].value = _rec['Total']
+                for _ci in range(8, 32): _row[_ci-1].value = 0
+                for _g in AGE_GROUPS:
+                    _row[_COL_MAP[(_g,'M')]-1].value = int(_rec.get(f'Niños {_g}', 0))
+                    _row[_COL_MAP[(_g,'F')]-1].value = int(_rec.get(f'Niñas {_g}', 0))
+
+            # ── Hoja Resumen Tamizados ────────────────────────────────────────
+            if not _resumen.empty:
+                _ws_res = _wb.create_sheet('Resumen Tamizados')
+                _AZUL  = 'FF1F4E79'
+                _AZUL2 = 'FF2E75B6'
+                _BLANCO = 'FFFFFFFF'
+                _GRIS   = 'FFF2F2F2'
+
+                # Título
+                _ws_res['A1'] = f'Resumen Acumulado de Tamizados — {_label_meses}'
+                _ws_res['A1'].font = Font(bold=True, color=_BLANCO, size=12)
+                _ws_res['A1'].fill = PatternFill('solid', fgColor=_AZUL)
+                _ws_res.merge_cells(f'A1:{get_column_letter(len(_resumen.columns))}1')
+
+                # Encabezados
+                _headers = ['Municipio', 'Total', 'Nuevos'] + \
+                           [f'Niños {g}' for g in AGE_GROUPS] + \
+                           [f'Niñas {g}' for g in AGE_GROUPS]
+                for ci, h in enumerate(_headers, 1):
+                    c = _ws_res.cell(row=2, column=ci, value=h)
+                    c.font = Font(bold=True, color=_BLANCO, size=10)
+                    c.fill = PatternFill('solid', fgColor=_AZUL2)
+                    c.alignment = Alignment(horizontal='center', wrap_text=True)
+
+                # Datos
+                for ri, row_r in _resumen.iterrows():
+                    is_total = row_r['Distrito'] == 'TOTAL'
+                    for ci, col_r in enumerate(['Distrito'] + _num_cols, 1):
+                        val = row_r.get(col_r, 0)
+                        c = _ws_res.cell(row=ri+3, column=ci, value=val)
+                        c.fill = PatternFill('solid', fgColor=_AZUL if is_total else (_GRIS if ri % 2 == 0 else _BLANCO))
+                        c.font = Font(bold=is_total, color=_BLANCO if is_total else '000000', size=10)
+                        c.alignment = Alignment(horizontal='center' if ci > 1 else 'left')
+
+                # Ancho de columnas
+                _ws_res.column_dimensions['A'].width = 22
+                for ci in range(2, len(_headers)+1):
+                    _ws_res.column_dimensions[get_column_letter(ci)].width = 10
+
+            _out_buf = io.BytesIO()
+            _wb.save(_out_buf)
+            _out_buf.seek(0)
+            st.download_button(
+                f"⬇️ Herramienta de Reportería UNICEF — {_label_meses} (.xlsx)",
+                _out_buf,
+                f"Reporte_UNICEF_FUSAL_{_label_meses}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            # Sin matriz: exportar tabla simple + hoja resumen
+            _buf_simple = io.BytesIO()
+            with pd.ExcelWriter(_buf_simple, engine='openpyxl') as _w:
+                df_export.to_excel(_w, sheet_name='Datos por mes', index=False)
+                if not _resumen.empty:
+                    _resumen.to_excel(_w, sheet_name='Resumen Tamizados', index=False)
+            _buf_simple.seek(0)
+            st.download_button(
+                f"⬇️ Datos para reporte UNICEF — {_label_meses} (.xlsx)",
+                _buf_simple,
+                f"Reporte_UNICEF_FUSAL_{_label_meses}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            st.info("💡 Para generar el Excel en formato exacto de UNICEF, sube el archivo `4. Matriz de Indicadores - FUSAL.xlsx` al repositorio.")
